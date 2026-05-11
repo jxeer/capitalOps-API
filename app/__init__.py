@@ -184,6 +184,7 @@ def create_app():
     from app.routes.execution import execution_bp
     from app.routes.vendor import vendor_bp
     from app.routes.compat import compat_bp
+    from app.routes.dev import dev_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
     app.register_blueprint(google_auth_bp, url_prefix="/api/v1/auth/google")
@@ -193,6 +194,7 @@ def create_app():
     app.register_blueprint(capital_bp, url_prefix="/api/v1/capital")
     app.register_blueprint(execution_bp, url_prefix="/api/v1/execution")
     app.register_blueprint(vendor_bp, url_prefix="/api/v1/vendor")
+    app.register_blueprint(dev_bp, url_prefix="/api/v1/dev")
 
     # GUI compatibility layer — serves flat REST endpoints at /api/ matching
     # the response format expected by the frontend GUI's Express proxy.
@@ -334,7 +336,7 @@ def create_app():
     return app
 
 
-def seed_demo_data():
+def seed_demo_data(force=False):
     """
     Populate the database with demo data for development and testing.
 
@@ -347,7 +349,11 @@ def seed_demo_data():
       - 8 milestones across all projects (some with risk flags)
       - 5 vendors across all assets
 
-    Skips seeding if any users already exist (idempotent).
+    Args:
+        force: If True, bypasses the user count guard and re-seeds all demo data.
+               Use with caution in production as it may create duplicate data.
+
+    Skips seeding if any users already exist (idempotent), unless force=True.
     """
     from app.models import User, Portfolio, Asset, Project, Deal, Investor, Allocation, Milestone, Vendor, WorkOrder, RiskFlag
 
@@ -366,8 +372,8 @@ def seed_demo_data():
         db.session.add(admin)
         db.session.flush()  # Flush to generate admin.id before Portfolio creation
 
-    # Guard: Only seed demo data if database is completely empty
-    if User.query.count() > 1:  # More than just the admin we just created
+    # Guard: Only seed demo data if database is completely empty (or force=True)
+    if not force and User.query.count() > 1:  # More than just the admin we just created
         return
 
     admin = User.query.filter_by(username="admin").first()
