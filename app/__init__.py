@@ -335,6 +335,30 @@ def create_app():
         seed_demo_data()
         print("Database seeded with demo data.")
 
+    # --- Background Scheduler for Entitlement Polling ---
+    # Only start the scheduler in non-testing environments.
+    if os.environ.get("FLASK_ENV") != "testing":
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from app.services.entitlement_poller import poll_all_entitlements
+
+        def poll_with_context():
+            with app.app_context():
+                poll_all_entitlements()
+
+        interval = int(os.environ.get("POLLER_INTERVAL_MINUTES", "30"))
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            poll_with_context,
+            "interval",
+            minutes=interval,
+            id="entitlement_poller",
+            name="Entitlement status poller",
+            replace_existing=True,
+        )
+        scheduler.start()
+        app.scheduler = scheduler
+        app.logger.info("Entitlement poller started, interval=%d minutes", interval)
+
     return app
 
 

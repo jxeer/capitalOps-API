@@ -318,3 +318,29 @@ def mark_notification_read(notification_id):
     db.session.commit()
 
     return jsonify({"notification": notification.to_dict()})
+
+
+@entitlement_bp.route("/poll/trigger", methods=["POST"])
+@jwt_required()
+@role_required("sponsor_admin")
+def trigger_poll():
+    """
+    Manually trigger the entitlement polling job in a background thread.
+
+    This endpoint is for admin/testing use. The actual automated polling
+    runs on a schedule via APScheduler.
+
+    Returns (202):
+        { "status": "poll triggered" }
+    """
+    import threading
+
+    def run_poll():
+        from app.services.entitlement_poller import poll_all_entitlements
+        with db.session.begin_nested():
+            poll_all_entitlements()
+
+    thread = threading.Thread(target=run_poll, daemon=True)
+    thread.start()
+
+    return jsonify({"status": "poll triggered"}), 202
