@@ -42,10 +42,14 @@ Security Considerations:
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required
+from flask_jwt_extended import jwt_required, get_jwt
 from app import db
-from app.models import Vendor, WorkOrder, Asset, Portfolio
+from app.models import Vendor, WorkOrder, Asset, Portfolio, FieldMedia
 from app.auth_utils import role_required
+import boto3
+import botocore.exceptions
+import uuid
+import os
 
 vendor_bp = Blueprint("vendor", __name__)
 
@@ -308,3 +312,244 @@ def update_work_order(wo_id):
 
     db.session.commit()
     return jsonify({"work_order": wo.to_dict()})
+
+
+@vendor_bp.route("/media/presign", methods=["POST"])
+@jwt_required()
+def presign_media():
+    """
+    Generate a presigned S3 PUT URL for direct media upload.
+
+    The client uploads directly to S3 using the presigned URL, then
+    calls POST /media to create the FieldMedia record.
+
+    Request Body:
+        {
+            "filename": str,           — required
+            "media_type": str,         — required ("photo" or "video")
+            "project_id": int,         — optional
+            "work_order_id": int       — optional
+        }
+
+    Returns (400):
+        If project_id and work_order_id are both missing
+        If media_type is not "photo" or "video"
+
+    Returns (200):
+        {
+            "presigned_url": str,
+            "s3_key": str,
+            "s3_bucket": str,
+            "expires_in": int
+        }
+    """
+    data = request.get_json() or {}
+
+    filename = data.get("filename")
+    media_type = data.get("media_type")
+    project_id = data.get("project_id")
+    work_order_id = data.get("work_order_id")
+
+    if not filename or not media_type:
+        return jsonify({"error": "filename and media_type are required"}), 400
+
+    if media_type not in ("photo", "video"):
+        return jsonify({"error": "media_type must be 'photo' or 'video'"}), 400
+
+    if not project_id and not work_order_id:
+        return jsonify({"error": "at least one of project_id or work_order_id is required"}), 400
+
+    bucket = os.environ.get("AWS_BUCKET_NAME")
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    if not bucket or not access_key or not secret_key:
+        return jsonify({"error": "S3 not configured"}), 500
+
+    entity_id = project_id or work_order_id
+    s3_key = f"field-media/{entity_id}/{uuid.uuid4()}/{filename}"
+
+    try:
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
+        )
+        presigned_url = s3.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": s3_key,
+                "ContentType": "application/octet-stream"
+            },
+            ExpiresIn=3600
+        )
+        return jsonify({
+            "presigned_url": presigned_url,
+            "s3_key": s3_key,
+            "s3_bucket": bucket,
+            "expires_in": 3600
+        })
+    except botocore.exceptions.ClientError as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@vendor_bp.route("/media", methods=["POST"])
+@jwt_required()
+def create_media_record():
+    """
+    Create a FieldMedia record after client uploads to S3.
+
+    Request Body:
+        {
+            "s3_key": str,             — required
+            "s3_bucket": str,           — required
+            "filename": str,            — required
+            "media_type": str,          — required ("photo" or "video")
+            "project_id": int,          — optional
+            "work_order_id": int        — optional
+            "caption": str              — optional
+        }
+
+    Returns (201):
+        { "field_media": { ... } }
+    """
+    data = request.get_json() or {}
+    claims = get_jwt()
+    user_id = claims.get("sub")
+
+    required = ["s3_key", "s3_bucket", "filename", "media_type"]
+    for field in required:
+        if not data.get(field):
+            return jsonify({"error": f"{field} is required"}), 400
+
+    if data["media_type"] not in ("photo", "video"):
+        return jsonify({"error": "media_type must be 'photo' or 'video'"}), 400
+
+    if not data.get("project_id") and not data.get("work_order_id"):
+        return jsonify({"error": "at least one of project_id or work_order_id is required"}), 400
+
+    media = FieldMedia(
+        project_id=data.get("project_id"),
+        work_order_id=data.get("work_order_id"),
+        uploaded_by_user_id=user_id,
+        media_type=data["media_type"],
+        s3_key=data["s3_key"],
+        s3_bucket=data["s3_bucket"],
+        filename=data["filename"],
+        caption=data.get("caption"),
+    )
+
+    db.session.add(media)
+    db.session.commit()
+
+    return jsonify({"field_media": media.to_dict()}), 201
+
+
+@vendor_bp.route("/media", methods=["GET"])
+@jwt_required()
+def list_media():
+    """
+    List FieldMedia records with presigned GET URLs.
+
+    Query Parameters:
+        project_id: Filter by project (optional)
+        work_order_id: Filter by work order (optional)
+
+    Presigned URLs expire after 1 hour.
+
+    Returns (200):
+        { "field_media": [ ... ] }
+    """
+    query = FieldMedia.query
+
+    project_id = request.args.get("project_id", type=int)
+    if project_id:
+        query = query.filter_by(project_id=project_id)
+
+    work_order_id = request.args.get("work_order_id", type=int)
+    if work_order_id:
+        query = query.filter_by(work_order_id=work_order_id)
+
+    records = query.order_by(FieldMedia.uploaded_at.desc()).all()
+
+    bucket = os.environ.get("AWS_BUCKET_NAME")
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    media_list = []
+    for record in records:
+        record_dict = record.to_dict()
+        if bucket and access_key and secret_key:
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    region_name=region,
+                )
+                presigned_get_url = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": record.s3_bucket, "Key": record.s3_key},
+                    ExpiresIn=3600
+                )
+                record_dict["presigned_url"] = presigned_get_url
+            except botocore.exceptions.ClientError:
+                record_dict["presigned_url"] = None
+        else:
+            record_dict["presigned_url"] = None
+        media_list.append(record_dict)
+
+    return jsonify({"field_media": media_list})
+
+
+@vendor_bp.route("/media/<int:media_id>", methods=["DELETE"])
+@jwt_required()
+def delete_media(media_id):
+    """
+    Delete a FieldMedia record and its S3 object.
+
+    Restricted to the uploader (uploaded_by_user_id matches current user)
+    or sponsor_admin role.
+
+    Returns (204):
+        No content on success
+
+    Returns (403):
+        If user is not the uploader and not sponsor_admin
+
+    Returns (404):
+        If media_id not found
+    """
+    media = FieldMedia.query.get_or_404(media_id)
+    claims = get_jwt()
+    user_id = claims.get("sub")
+    user_role = claims.get("role", "")
+
+    if media.uploaded_by_user_id != int(user_id) and user_role != "sponsor_admin":
+        return jsonify({"error": "Not authorized to delete this media"}), 403
+
+    bucket = os.environ.get("AWS_BUCKET_NAME")
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    if bucket and access_key and secret_key:
+        try:
+            s3 = boto3.client(
+                "s3",
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=region,
+            )
+            s3.delete_object(Bucket=media.s3_bucket, Key=media.s3_key)
+        except botocore.exceptions.ClientError:
+            pass
+
+    db.session.delete(media)
+    db.session.commit()
+
+    return "", 204
