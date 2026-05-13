@@ -337,7 +337,9 @@ def trigger_poll():
 
     def run_poll():
         from app.services.entitlement_poller import poll_all_entitlements
-        with db.session.begin_nested():
+        from flask import current_app
+        app = current_app._get_current_object()
+        with app.app_context():
             poll_all_entitlements()
 
     thread = threading.Thread(target=run_poll, daemon=True)
