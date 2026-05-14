@@ -44,7 +44,7 @@ Security Considerations:
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt
 from app import db
-from app.models import Project, Milestone, RiskFlag
+from app.models import Project, Milestone, RiskFlag, User, EntitlementRecord
 from app.auth_utils import role_required
 from datetime import date
 
@@ -286,4 +286,119 @@ def governance():
         "projects": [p.to_dict() for p in projects],
         "milestones": [m.to_dict() for m in milestones],
         "risk_flags": [r.to_dict() for r in risk_flags],
+    })
+
+
+@execution_bp.route("/track-record/<int:user_id>", methods=["GET"])
+@jwt_required()
+def track_record(user_id):
+    """
+    Portfolio-style track record summary for a specific user.
+
+    Returns all projects where pm_assigned matches the user's full_name,
+    aggregated into a portfolio summary with per-project drill-down.
+
+    Access Control:
+        - sponsor_admin: Can view any user's track record
+        - project_manager: Can only view their own track record (user_id must match JWT user_id)
+        - other roles: 403 Forbidden
+
+    Returns (200):
+        {
+            "user": { id, full_name, role },
+            "summary": {
+                "total_projects": int,
+                "completed_projects": int,
+                "active_projects": int,
+                "total_budget_managed": float,
+                "on_time_completion_rate": float,
+                "avg_milestone_completion": float,
+                "total_risk_flags": int,
+                "resolved_risk_flags": int,
+                "entitlement_records_tracked": int
+            },
+            "projects": [ ... ]
+        }
+    """
+    current_user_id = get_jwt().get("user_id")
+    current_role = get_jwt().get("role")
+
+    if current_role not in ("sponsor_admin", "project_manager"):
+        return jsonify({"error": "Access denied"}), 403
+
+    if current_role == "project_manager" and current_user_id != user_id:
+        return jsonify({"error": "Access denied"}), 403
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    if not user.full_name:
+        return jsonify({"error": "User has no full_name set"}), 400
+
+    projects = Project.query.filter_by(pm_assigned=user.full_name).all()
+
+    total_projects = len(projects)
+    completed_projects = sum(1 for p in projects if p.status in ("Complete", "Completed"))
+    active_projects = total_projects - completed_projects
+    total_budget_managed = sum(float(p.budget_total or 0) for p in projects)
+
+    all_milestones = Milestone.query.filter(Milestone.project_id.in_(p.id for p in projects)).all()
+    completed_milestones = [m for m in all_milestones if m.status == "Complete"]
+    on_time_count = sum(
+        1 for m in completed_milestones
+        if m.completion_date and m.target_date and m.completion_date <= m.target_date
+    )
+    on_time_completion_rate = (
+        round(on_time_count / len(completed_milestones) * 100, 1)
+        if completed_milestones else 0.0
+    )
+    avg_milestone_completion = (
+        round(sum(
+            (sum(1 for m in all_milestones if m.project_id == pid and m.status == "Complete") /
+             len([m for m in all_milestones if m.project_id == pid])) * 100
+            for pid in [p.id for p in projects if [m for m in all_milestones if m.project_id == pid]]
+        ) / len([p for p in projects if [m for m in all_milestones if m.project_id == p.id]]), 1)
+        if projects else 0.0
+    )
+
+    all_risk_flags = RiskFlag.query.filter(RiskFlag.project_id.in_(p.id for p in projects)).all()
+    resolved_risk_flags = sum(1 for r in all_risk_flags if r.status == "Resolved")
+    entitlement_records_tracked = EntitlementRecord.query.filter(
+        EntitlementRecord.project_id.in_(p.id for p in projects)
+    ).count()
+
+    project_summaries = []
+    for p in projects:
+        project_milestones = [m for m in all_milestones if m.project_id == p.id]
+        p_completed = sum(1 for m in project_milestones if m.status == "Complete")
+        p_risk_flags = [r for r in all_risk_flags if r.project_id == p.id]
+        p_entitlements = EntitlementRecord.query.filter_by(project_id=p.id).count()
+        project_summaries.append({
+            **p.to_dict(),
+            "milestone_count": len(project_milestones),
+            "milestones_complete": p_completed,
+            "completion_pct": round(p_completed / len(project_milestones) * 100, 1) if project_milestones else 0,
+            "risk_flag_count": len(p_risk_flags),
+            "entitlement_count": p_entitlements,
+        })
+
+    return jsonify({
+        "user": {
+            "id": user.id,
+            "full_name": user.full_name,
+            "role": user.role,
+        },
+        "summary": {
+            "total_projects": total_projects,
+            "completed_projects": completed_projects,
+            "active_projects": active_projects,
+            "total_budget_managed": total_budget_managed,
+            "on_time_completion_rate": on_time_completion_rate,
+            "avg_milestone_completion": avg_milestone_completion,
+            "total_risk_flags": len(all_risk_flags),
+            "resolved_risk_flags": resolved_risk_flags,
+            "entitlement_records_tracked": entitlement_records_tracked,
+        },
+        "projects": project_summaries,
     })
