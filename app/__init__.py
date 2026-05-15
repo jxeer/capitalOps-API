@@ -35,6 +35,7 @@ from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_limiter.errors import RateLimitExceeded
 
 # --- Extension Instances (module-level for shared access) ---
 
@@ -128,8 +129,10 @@ def create_app():
 
     # --- Rate Limit Exceeded Handler ---
     # Return JSON 429 response (not HTML) when rate limit is hit.
+    # Use Flask's @app.errorhandler for RateLimitExceeded (not limiter.ratelimit_exceeded_handler
+    # which doesn't exist in flask-limiter 4.x).
 
-    @limiter.ratelimit_exceeded_handler
+    @app.errorhandler(RateLimitExceeded)
     def ratelimit_exceeded_handler(e):
         return jsonify({"error": "Too many requests, please try again later"}), 429
 
@@ -245,113 +248,7 @@ def create_app():
 
     # --- Database Initialization ---
     with app.app_context():
-        # Create all tables defined by SQLAlchemy models (safe to call repeatedly)
         db.create_all()
-
-        # --- Schema Migrations ---
-        # Add any columns that exist in the model but may be missing from an older DB.
-        # Each migration is guarded by a column existence check so it's safe to run repeatedly.
-        from sqlalchemy import inspect, text
-        inspector = inspect(db.engine)
-        user_cols = {col["name"] for col in inspector.get_columns("users")}
-
-        # All column migrations for the users table as (column_name, DDL fragment) tuples.
-        # These are applied in order; each is skipped if the column already exists.
-        user_migrations = [
-            ("google_id",              "VARCHAR(255) UNIQUE"),
-            ("profile_type",           "VARCHAR(20)"),
-            ("profile_status",         "VARCHAR(20) DEFAULT 'pending'"),
-            ("title",                  "VARCHAR(100)"),
-            ("organization",           "VARCHAR(200)"),
-            ("linked_in_url",          "VARCHAR(500)"),
-            ("bio",                    "TEXT"),
-            ("profile_image",          "VARCHAR(500)"),
-            ("geographic_focus",       "VARCHAR(200)"),
-            ("investment_stage",       "VARCHAR(100)"),
-            ("target_return",          "VARCHAR(100)"),
-            ("check_size_min",         "NUMERIC(15,2)"),
-            ("check_size_max",         "NUMERIC(15,2)"),
-            ("risk_tolerance",         "VARCHAR(20)"),
-            ("strategic_interest",     "VARCHAR(100)"),
-            ("service_types",          "VARCHAR(200)"),
-            ("geographic_service_area","VARCHAR(200)"),
-            ("years_of_experience",    "VARCHAR(50)"),
-            ("certifications",         "TEXT"),
-            ("average_project_size",   "NUMERIC(15,2)"),
-            ("development_focus",      "VARCHAR(100)"),
-            ("development_type",       "VARCHAR(100)"),
-            ("team_size",              "INTEGER"),
-            ("portfolio_value",        "NUMERIC(15,2)"),
-        ]
-        for col_name, col_def in user_migrations:
-            if col_name not in user_cols:
-                db.session.execute(text(
-                    f"ALTER TABLE users ADD COLUMN {col_name} {col_def}"
-                ))
-
-        # Make password_hash nullable to support Google-only accounts (no password set)
-        if "password_hash" in user_cols:
-            db.session.execute(text(
-                "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"
-            ))
-
-        # --- work_orders table migrations ---
-        # Phase 4 added description and photo_url; older production DBs may be missing them.
-        if inspector.has_table("work_orders"):
-            wo_cols = {col["name"] for col in inspector.get_columns("work_orders")}
-            work_order_migrations = [
-                ("description", "TEXT"),
-                ("photo_url",   "VARCHAR(500)"),
-                ("created_at",  "TIMESTAMP DEFAULT NOW()"),
-            ]
-            for col_name, col_def in work_order_migrations:
-                if col_name not in wo_cols:
-                    db.session.execute(text(
-                        f"ALTER TABLE work_orders ADD COLUMN {col_name} {col_def}"
-                    ))
-
-        # --- risk_flags table migrations ---
-        # resolved_at was added in Phase 4; guard it the same way.
-        if inspector.has_table("risk_flags"):
-            rf_cols = {col["name"] for col in inspector.get_columns("risk_flags")}
-            risk_flag_migrations = [
-                ("resolved_at", "TIMESTAMP"),
-                ("created_at",  "TIMESTAMP DEFAULT NOW()"),
-            ]
-            for col_name, col_def in risk_flag_migrations:
-                if col_name not in rf_cols:
-                    db.session.execute(text(
-                        f"ALTER TABLE risk_flags ADD COLUMN {col_name} {col_def}"
-                    ))
-
-        # --- portfolios table migration ---
-        # Add user_id column to portfolios for user-scoped data isolation
-        if inspector.has_table("portfolios"):
-            port_cols = {col["name"] for col in inspector.get_columns("portfolios")}
-            if "user_id" not in port_cols:
-                db.session.execute(text(
-                    "ALTER TABLE portfolios ADD COLUMN user_id INTEGER REFERENCES users(id)"
-                ))
-
-        # --- investors table migration ---
-        # Add user_id column to investors for user-scoped data isolation
-        if inspector.has_table("investors"):
-            inv_cols = {col["name"] for col in inspector.get_columns("investors")}
-            if "user_id" not in inv_cols:
-                db.session.execute(text(
-                    "ALTER TABLE investors ADD COLUMN user_id INTEGER REFERENCES users(id)"
-                ))
-
-        # --- mfa_codes table migration ---
-        # Add failed_attempts column for brute-force protection on MFA verification
-        if inspector.has_table("mfa_codes"):
-            mfa_cols = {col["name"] for col in inspector.get_columns("mfa_codes")}
-            if "failed_attempts" not in mfa_cols:
-                db.session.execute(text(
-                    "ALTER TABLE mfa_codes ADD COLUMN failed_attempts INTEGER DEFAULT 0"
-                ))
-
-        db.session.commit()
 
         # Auto-seed demo data if no users exist in the database.
         # This is safe because seed_demo_data() checks if users already exist first.

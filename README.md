@@ -71,6 +71,34 @@ FLASK_APP=main.py flask seed
 
 Seeding is idempotent — it skips if users already exist. It never runs when `FLASK_ENV=production`.
 
+### 5. Database Migrations
+
+All schema changes are managed through Alembic migrations in `migrations/versions/`.
+Never use inline `ALTER TABLE` statements — all new columns and tables must be added via migration files.
+
+**Run migrations on first deploy and after each deploy that includes new migration files:**
+```bash
+flask db upgrade
+```
+
+Railway runs `flask db upgrade` automatically as a release command before the server starts (see `railway.toml`).
+
+**Create a new migration:**
+```bash
+flask db migrate -m "Descriptive message"
+# Then edit the generated file in migrations/versions/
+```
+
+**Manually apply all pending migrations:**
+```bash
+flask db upgrade
+```
+
+**Roll back the last migration:**
+```bash
+flask db downgrade
+```
+
 ---
 
 ## Architecture

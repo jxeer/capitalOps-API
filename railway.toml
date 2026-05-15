@@ -1,3 +1,4 @@
 [deploy]
+releaseCommand = "flask db upgrade"
 startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
 healthCheckPath = "/api/backend-status"

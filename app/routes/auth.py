@@ -368,7 +368,7 @@ def forgot_password():
     # Construct the reset link with the token
     # Take first origin from comma-separated FRONTEND_ORIGIN list
     frontend_origin = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173").split(",")[0]
-reset_link = f"{frontend_origin}/auth/reset-password?token={reset_token.plaintext_token}"
+    reset_link = f"{frontend_origin}/auth/reset-password?token={reset_token.plaintext_token}"
 
     _send_reset_email(user, reset_token.plaintext_token)
 
