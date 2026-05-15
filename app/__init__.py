@@ -263,8 +263,19 @@ def create_app():
             mfa_cols = {col["name"] for col in inspector.get_columns("mfa_codes")}
             if "code_hash" not in mfa_cols:
                 db.session.execute(text("ALTER TABLE mfa_codes ADD COLUMN code_hash VARCHAR(64) NOT NULL DEFAULT ''"))
+                db.session.commit()
+                # Backfill code_hash from plaintext code for any existing rows
+                db.session.execute(text("UPDATE mfa_codes SET code_hash = encode(sha256(code::bytea), 'hex') WHERE code IS NOT NULL AND code_hash = ''"))
+                db.session.commit()
             if "failed_attempts" not in mfa_cols:
                 db.session.execute(text("ALTER TABLE mfa_codes ADD COLUMN failed_attempts INTEGER DEFAULT 0"))
+            # Drop obsolete 'code' column if present (pre-hash-migration leftover).
+            # Guard with try/except because SQLite does not support DROP COLUMN.
+            if "code" in mfa_cols:
+                try:
+                    db.session.execute(text("ALTER TABLE mfa_codes DROP COLUMN code"))
+                except Exception:
+                    pass  # SQLite: no-op; PostgreSQL uses code_hash only from here on
 
         db.session.commit()
 
