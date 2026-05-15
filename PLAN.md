@@ -93,6 +93,36 @@ ARCGIS_PARCEL_FIELD=PARCEL_NUM
 **New Encrypted Columns on Investor Model:**
 - `tax_id`, `date_of_birth`, `phone`, `bank_account_number`, `routing_number`
 
+### Financial Reports (May 2026)
+
+**Purpose:** Allow Sponsor Admins to generate and share financial summaries for projects or deals.
+
+**New Files:**
+- `app/routes/reports.py` - Financial report endpoints
+- `migrations/versions/add_financial_reports.py` - FinancialReport table migration
+
+**Model:** `FinancialReport` with fields: id, created_by_user_id, recipient_user_id, project_id (nullable), deal_id (nullable), report_type, title, content (JSON), is_read, created_at. Check constraint ensures project_id or deal_id is set.
+
+**Routes Added:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/reports/` | Generate and share a report (sponsor_admin only) |
+| GET | `/api/v1/reports/` | List reports received by current user |
+| GET | `/api/v1/reports/sent` | List reports sent by current user |
+| GET | `/api/v1/reports/:id` | Get single report (marks as read) |
+
+**User Picker Endpoint:**
+- `GET /api/v1/auth/users` - Returns all platform users (id, full_name, email, role) for report recipient selection (sponsor_admin only)
+
+### Track Record (May 2026)
+
+**Purpose:** Portfolio-style summary of all projects a user has been involved with as PM.
+
+**New Endpoint:**
+- `GET /api/v1/execution/track-record/:user_id` - Returns aggregated summary with per-project breakdown. Access: sponsor_admin (any user), project_manager (own record only).
+
+**Response:** user info, summary stats (total/completed/active projects, budget managed, on-time completion rate, avg milestone completion %, risk flag counts, entitlement count), and project array with milestone/risk/entitlement counts.
+
 ---
 
 ## Setup Instructions
