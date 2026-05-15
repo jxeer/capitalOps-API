@@ -40,7 +40,7 @@ from functools import wraps
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
-from app import db
+from app import db, limiter
 from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
     Allocation, Milestone, Vendor, WorkOrder, RiskFlag, User,
@@ -123,6 +123,7 @@ def backend_status():
     })
 
 
+@limiter.limit("10 per minute")
 @compat_bp.route("/login", methods=["POST"])
 @_require_api_key
 def compat_login():

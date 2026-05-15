@@ -23,8 +23,10 @@ Routes:
 
 import os
 import logging
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, set_access_cookies, unset_jwt_cookies
+from app import limiter
 from app.models import User, PasswordResetToken, MfaCode
 from app.auth_utils import get_current_user, role_required
 
@@ -41,6 +43,7 @@ auth_bp = Blueprint("auth", __name__)
 # This design ensures that even if credentials are compromised, attackers cannot
 # login without also having access to the user's email to retrieve the MFA code.
 
+@limiter.limit("10 per minute")
 @auth_bp.route("/login", methods=["POST"])
 def login():
     """
@@ -99,43 +102,41 @@ def login():
     return jsonify({"mfaRequired": True}), 200
 
 
+@limiter.limit("5 per minute")
 @auth_bp.route("/login/verify-mfa", methods=["POST"])
 def login_verify_mfa():
     """
     Step 2 of login: Verify MFA code and issue JWT access token.
-    
+
     SECURITY: We look up the most recent unused MFA code for this user.
     Codes are single-use (marked used after verification) and expire after 5 min.
-    
+    After 5 failed attempts on the same code, the code is invalidated and all
+    outstanding codes for that user are marked as used (brute-force protection).
+
     Request body:
         {
             "username": "admin",       // required
             "code": "123456"         // required, 6-digit MFA code
         }
-    
+
     Response (200 - Success):
         {
             "accessToken": "eyJ...",
             "user": {id, username, role, full_name}
         }
-    
+
     Response (400): Missing username or code
     Response (401): Invalid, expired, or already-used code
     """
     data = request.get_json()
 
-    # Validate request body
     if not data or not data.get("username") or not data.get("code"):
         return jsonify({"error": "Username and code are required"}), 400
 
-    # Look up user by username
     user = User.query.filter_by(username=data["username"]).first()
     if not user:
-        # Generic message to prevent username enumeration
         return jsonify({"error": "Invalid username or code"}), 401
 
-    # Find the most recent unused MFA code for this user
-    # Order by created_at descending to get the latest code first
     mfa_code = MfaCode.query.filter_by(
         user_id=user.id,
         used=False,
@@ -147,20 +148,25 @@ def login_verify_mfa():
     import hashlib, secrets
     incoming_hash = hashlib.sha256(data["code"].encode()).hexdigest()
     if not secrets.compare_digest(mfa_code.code_hash, incoming_hash):
+        mfa_code.failed_attempts += 1
+        db = _get_db()
+        db.session.commit()
+        if mfa_code.failed_attempts >= 5:
+            MfaCode.query.filter_by(user_id=user.id, used=False).update({"used": True})
+            db.session.commit()
+            return jsonify({"error": "Too many failed attempts. Please log in again to receive a new code."}), 401
         return jsonify({"error": "Invalid or expired MFA code"}), 401
 
-    # Mark code as used (single-use)
     mfa_code.used = True
+    mfa_code.failed_attempts = 0
     db = _get_db()
     db.session.commit()
 
-    # Issue JWT access token with user identity and role
     access_token = create_access_token(
         identity=str(user.id),
         additional_claims={"role": user.role},
     )
 
-    # Use httpOnly cookie for auth — XSS cannot read the cookie
     response = jsonify({
         "accessToken": access_token,
         "user": user.to_dict(),
@@ -306,6 +312,7 @@ def list_users():
 # - Tokens are single-use and expire after 30 minutes
 # - The frontend displays the reset link directly when email sending fails (debugging)
 
+@limiter.limit("5 per 15 minutes")
 @auth_bp.route("/forgot-password", methods=["POST"])
 def forgot_password():
     """
@@ -373,6 +380,7 @@ reset_link = f"{frontend_origin}/auth/reset-password?token={reset_token.plaintex
     }), 200
 
 
+@limiter.limit("5 per 15 minutes")
 @auth_bp.route("/reset-password", methods=["POST"])
 def reset_password():
     """

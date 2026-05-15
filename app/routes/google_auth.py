@@ -49,7 +49,7 @@ from flask_jwt_extended import create_access_token, set_access_cookies
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-from app import db
+from app import db, limiter
 from app.models import User
 
 logger = logging.getLogger(__name__)
@@ -303,6 +303,7 @@ def google_callback():
     return response
 
 
+@limiter.limit("20 per minute")
 @google_auth_bp.route("/", methods=["POST"])
 def google_login():
     """

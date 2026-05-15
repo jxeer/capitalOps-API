@@ -33,6 +33,8 @@ from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 # --- Extension Instances (module-level for shared access) ---
 
@@ -41,6 +43,15 @@ db = SQLAlchemy()
 
 # JWTManager instance — handles JWT creation, validation, and error responses
 jwt = JWTManager()
+
+# Flask-Limiter instance — rate limiting with redis fallback
+# REDIS_URL env var switches from in-memory to Redis storage for production.
+# Falls back to memory:// for local dev (no Redis required).
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=os.environ.get("REDIS_URL", "memory://"),
+    default_limits=["200 per minute"],
+)
 
 
 def create_app():
@@ -113,6 +124,14 @@ def create_app():
 
     db.init_app(app)
     jwt.init_app(app)
+    limiter.init_app(app)
+
+    # --- Rate Limit Exceeded Handler ---
+    # Return JSON 429 response (not HTML) when rate limit is hit.
+
+    @limiter.ratelimit_exceeded_handler
+    def ratelimit_exceeded_handler(e):
+        return jsonify({"error": "Too many requests, please try again later"}), 429
 
     # Enable CORS for the capitalops-web React frontend.
     # FRONTEND_ORIGIN controls which origin(s) are allowed.
@@ -321,6 +340,15 @@ def create_app():
             if "user_id" not in inv_cols:
                 db.session.execute(text(
                     "ALTER TABLE investors ADD COLUMN user_id INTEGER REFERENCES users(id)"
+                ))
+
+        # --- mfa_codes table migration ---
+        # Add failed_attempts column for brute-force protection on MFA verification
+        if inspector.has_table("mfa_codes"):
+            mfa_cols = {col["name"] for col in inspector.get_columns("mfa_codes")}
+            if "failed_attempts" not in mfa_cols:
+                db.session.execute(text(
+                    "ALTER TABLE mfa_codes ADD COLUMN failed_attempts INTEGER DEFAULT 0"
                 ))
 
         db.session.commit()

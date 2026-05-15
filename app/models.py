@@ -879,6 +879,7 @@ class MfaCode(db.Model):
     expires_at = db.Column(db.DateTime, nullable=False)
     used = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    failed_attempts = db.Column(db.Integer, default=0)
 
     user = db.relationship("User", backref="mfa_codes")
 
