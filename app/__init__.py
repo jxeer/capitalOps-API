@@ -124,7 +124,7 @@ def create_app():
     CORS(app, resources={r"/api/.*": {
         "origins": allowed_origins,
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-API-Key", "X-Dev-Secret"],
+        "allow_headers": ["Content-Type", "Authorization", "X-API-Key"],
         "supports_credentials": True,
     }})
 
@@ -205,7 +205,8 @@ def create_app():
     app.register_blueprint(capital_bp, url_prefix="/api/v1/capital")
     app.register_blueprint(execution_bp, url_prefix="/api/v1/execution")
     app.register_blueprint(vendor_bp, url_prefix="/api/v1/vendor")
-    app.register_blueprint(dev_bp, url_prefix="/api/v1/dev")
+    if os.environ.get("FLASK_ENV") != "production":
+        app.register_blueprint(dev_bp, url_prefix="/api/v1/dev")
     app.register_blueprint(entitlement_bp, url_prefix="/api/v1/entitlement")
     app.register_blueprint(reports_bp, url_prefix="/api/v1/reports")
 

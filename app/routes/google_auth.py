@@ -84,38 +84,6 @@ def google_status():
     })
 
 
-@google_auth_bp.route("/debug", methods=["GET"])
-def google_debug():
-    """
-    Debug endpoint to verify route registration and environment configuration.
-
-    Returns diagnostic information about:
-    - Whether the route is properly registered
-    - Whether GOOGLE_OAUTH_CLIENT_ID is set (partial for security)
-    - Railway-specific environment variables
-
-    WARNING: This endpoint exposes internal environment details. It should
-    only be available in development/staging environments.
-
-    Returns (200):
-        {
-            "message": "Google debug endpoint works",
-            "client_id_set": true/false,
-            "client_id": "first 20 chars...",
-            "url_root": "https://...",
-            "railway_vars": { ... }
-        }
-    """
-    railway_vars = {k: v for k, v in os.environ.items() if k.startswith("RAILWAY")}
-    return jsonify({
-        "message": "Google debug endpoint works",
-        "client_id_set": bool(os.environ.get("GOOGLE_OAUTH_CLIENT_ID")),
-        "client_id": os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "NOT SET")[:20] + "...",
-        "url_root": request.url_root,
-        "railway_vars": railway_vars,
-    })
-
-
 @google_auth_bp.route("/gauth", methods=["GET"])
 def google_redirect():
     """
