@@ -11,9 +11,11 @@ The React frontend (capitalops-web) runs on port 5000 via Vite and
 proxies /api requests to this backend on port 3001.
 """
 
+import os
 from app import create_app
 
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3001, debug=True)
+    debug = os.environ.get("FLASK_ENV") == "development"
+    app.run(host="0.0.0.0", port=3001, debug=debug)

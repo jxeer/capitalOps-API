@@ -64,6 +64,15 @@ def create_app():
         os.environ.get("SECRET_KEY", "capitalops-dev-jwt-secret-change-in-production")
     )
 
+    if (
+        app.config["JWT_SECRET_KEY"] == "capitalops-dev-jwt-secret-change-in-production"
+        and os.environ.get("FLASK_ENV") == "production"
+    ):
+        raise RuntimeError(
+            "FATAL: JWT_SECRET_KEY is using the default development value in a production environment. "
+            "Set the JWT_SECRET_KEY environment variable to a strong random value before deploying."
+        )
+
     # Access token expiration — 1 hour by default, configurable via env var (in minutes)
     access_token_minutes = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRES_MINUTES", "60"))
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=access_token_minutes)
