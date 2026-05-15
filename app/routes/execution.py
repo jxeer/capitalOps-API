@@ -353,14 +353,20 @@ def track_record(user_id):
         round(on_time_count / len(completed_milestones) * 100, 1)
         if completed_milestones else 0.0
     )
-    avg_milestone_completion = (
-        round(sum(
-            (sum(1 for m in all_milestones if m.project_id == pid and m.status == "Complete") /
-             len([m for m in all_milestones if m.project_id == pid])) * 100
-            for pid in [p.id for p in projects if [m for m in all_milestones if m.project_id == pid]]
-        ) / len([p for p in projects if [m for m in all_milestones if m.project_id == p.id]]), 1)
-        if projects else 0.0
-    )
+    projects_with_milestones = [
+        p for p in projects
+        if any(m.project_id == p.id for m in all_milestones)
+    ]
+    if projects_with_milestones:
+        avg_milestone_completion = round(
+            sum(
+                sum(1 for m in all_milestones if m.project_id == p.id and m.status == "Complete") /
+                len([m for m in all_milestones if m.project_id == p.id]) * 100
+                for p in projects_with_milestones
+            ) / len(projects_with_milestones), 1
+        )
+    else:
+        avg_milestone_completion = 0.0
 
     all_risk_flags = RiskFlag.query.filter(RiskFlag.project_id.in_(p.id for p in projects)).all()
     resolved_risk_flags = sum(1 for r in all_risk_flags if r.status == "Resolved")
