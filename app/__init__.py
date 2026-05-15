@@ -364,11 +364,14 @@ def seed_demo_data(force=False):
         db.session.add(admin)
         db.session.flush()
 
-    # Ensure admin always has the correct real email (not the placeholder)
+    # Ensure admin always has the correct real email (not the placeholder).
+    # Guard against unique constraint: only update if no other user has the target email.
     admin_user = User.query.filter_by(username="admin").first()
     if admin_user and admin_user.email != "julian.xeer@gmail.com":
-        admin_user.email = "julian.xeer@gmail.com"
-        db.session.commit()
+        other_user = User.query.filter_by(email="julian.xeer@gmail.com").first()
+        if not other_user:
+            admin_user.email = "julian.xeer@gmail.com"
+            db.session.commit()
 
     # Guard: Only seed demo data if database is completely empty (or force=True)
     if not force and User.query.count() > 1:  # More than just the admin we just created
