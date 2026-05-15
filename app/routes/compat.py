@@ -258,7 +258,6 @@ def _get_user_or_none():
         return None
 
 
-@_require_api_key
 @compat_bp.route("/user", methods=["GET"])
 def get_user():
     """Return the current authenticated user from JWT token or session."""
