@@ -103,7 +103,11 @@ def create_app():
     app.config["JWT_ACCESS_COOKIE_PATH"] = "/"
     app.config["JWT_ACCESS_COOKIE_HTTP_ONLY"] = True
     app.config["JWT_ACCESS_COOKIE_SECURE"] = os.environ.get("ENVIRONMENT", "development") == "production" or os.environ.get("RAILWAY_ENVIRONMENT", "") != ""
-    app.config["JWT_ACCESS_COOKIE_SAME_SITE"] = "None"
+    app.config["JWT_ACCESS_COOKIE_SAME_SITE"] = "Lax"
+    # Cookie domain must allow cross-origin cookie sharing between Railway backend
+    # and Vercel frontend. "." prefix enables subdomain matching.
+    cookie_domain = os.environ.get("JWT_COOKIE_DOMAIN", ".capitalops.vercel.app")
+    app.config["JWT_ACCESS_COOKIE_DOMAIN"] = cookie_domain
 
     # PostgreSQL connection string - uses Railway PostgreSQL if DATABASE_URL is set
     db_url = os.environ.get("DATABASE_URL")
