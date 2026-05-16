@@ -170,6 +170,7 @@ def login_verify_mfa():
     from flask import current_app
     current_app.logger.warning(f"[MFA] Token created for user {user.id}, cookie config: name=capitalops_token, domain=.capitalops.vercel.app, secure=True")
 
+    current_app.logger.warning(f"[MFA] cookie domain config: {current_app.config.get('JWT_ACCESS_COOKIE_DOMAIN')}")
     response = jsonify({
         "accessToken": access_token,
         "user": user.to_dict(),
