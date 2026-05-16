@@ -175,8 +175,17 @@ def login_verify_mfa():
         "accessToken": access_token,
         "user": user.to_dict(),
     })
-    set_access_cookies(response, access_token)
-    current_app.logger.warning(f"[MFA] set_access_cookies called, Set-Cookie headers: {response.headers.getlist('Set-Cookie')}")
+    response.set_cookie(
+        "capitalops_token",
+        value=access_token,
+        max_age=current_app.config.get("JWT_ACCESS_TOKEN_EXPIRES", 3600),
+        secure=True,
+        httponly=True,
+        domain=".capitalops.vercel.app",
+        path="/",
+        samesite="Lax",
+    )
+    current_app.logger.warning(f"[MFA] manual set_cookie called, Set-Cookie headers: {response.headers.getlist('Set-Cookie')}")
     return response, 200
 
 
