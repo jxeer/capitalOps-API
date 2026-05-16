@@ -167,14 +167,15 @@ def login_verify_mfa():
         additional_claims={"role": user.role},
     )
 
-    app.logger.warning(f"[MFA] Token created for user {user.id}, cookie config: name=capitalops_token, domain=.capitalops.vercel.app, secure=True")
+    from flask import current_app
+    current_app.logger.warning(f"[MFA] Token created for user {user.id}, cookie config: name=capitalops_token, domain=.capitalops.vercel.app, secure=True")
 
     response = jsonify({
         "accessToken": access_token,
         "user": user.to_dict(),
     })
     set_access_cookies(response, access_token)
-    app.logger.warning(f"[MFA] set_access_cookies called, Set-Cookie header present: {'Set-Cookie' in [h for h in response.headers]}")
+    current_app.logger.warning(f"[MFA] set_access_cookies called, Set-Cookie header present: {'Set-Cookie' in [h for h in response.headers]}")
     return response, 200
 
 
