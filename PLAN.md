@@ -77,6 +77,9 @@ ARCGIS_PARCEL_FIELD=PARCEL_NUM
 | GET | `/api/v1/entitlement/notifications` | Unread notifications for current user |
 | PATCH | `/api/v1/entitlement/notifications/:id/read` | Mark notification read |
 
+### Fixes (May 21, 2026)
+- **Entitlement page not loading**: The `records` useQuery used the generic `getQueryFn` which joins path segments as URL — `/api/v1/entitlement/` was joined as `https://capialops-backend-api-production.up.railway.appapi/v1/entitlement/` (missing slash between host and path). Fixed with explicit `fetch` + `getAuthHeader()` + full URL. Same fix applied to `projects` query.
+
 **Notification Triggers:**
 - Entitlement status change → PM gets notification
 - Work order vendor change → vendor's user gets notification
