@@ -60,10 +60,7 @@ def _require_api_key(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        import logging
-        logger = logging.getLogger(__name__)
         auth_header = request.headers.get("Authorization", "")
-        logger.warning(f"_require_api_key called: auth_header={auth_header[:30] if auth_header else 'None'}")
         if auth_header.startswith("Bearer "):
             return f(*args, **kwargs)
         api_key = os.environ.get("COMPAT_API_KEY")
