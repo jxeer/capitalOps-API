@@ -51,13 +51,18 @@ compat_bp = Blueprint("compat", __name__)
 
 
 def _require_api_key(f):
-    """Protect mutation routes with a shared API key.
+    """Protect mutation routes with a shared API key OR Bearer token auth.
 
     The GUI's Express server must send the key in X-API-Key header.
     If COMPAT_API_KEY is not set, mutation routes are open (dev mode).
+    If a Bearer token is present (Authorization header), auth is already
+    handled upstream — only check API key for server-to-server calls.
     """
     @wraps(f)
     def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return f(*args, **kwargs)
         api_key = os.environ.get("COMPAT_API_KEY")
         if api_key:
             provided = request.headers.get("X-API-Key", "")
@@ -390,7 +395,6 @@ def get_asset(asset_id):
 
 
 @compat_bp.route("/assets", methods=["POST"])
-@_require_api_key
 def create_asset():
     """Create a new asset. Expects camelCase JSON body.
 
@@ -457,7 +461,6 @@ def get_project(project_id):
 
 
 @compat_bp.route("/projects", methods=["POST"])
-@_require_api_key
 def create_project():
     """Create a new project. Expects camelCase JSON body.
 
@@ -595,7 +598,6 @@ def get_investor(investor_id):
 
 
 @compat_bp.route("/investors", methods=["POST"])
-@_require_api_key
 def create_investor():
     """Create a new investor. Expects camelCase JSON body.
 
@@ -882,7 +884,6 @@ def risk_flags_by_project(project_id):
 # ---------------------------------------------------------------------------
 
 @compat_bp.route("/assets/<int:asset_id>", methods=["PUT"])
-@_require_api_key
 def update_asset(asset_id):
     """Update an asset. Expects camelCase JSON body."""
     asset = Asset.query.get_or_404(asset_id)
@@ -906,7 +907,6 @@ def update_asset(asset_id):
 
 
 @compat_bp.route("/assets/<int:asset_id>", methods=["DELETE"])
-@_require_api_key
 def delete_asset(asset_id):
     """Delete an asset."""
     asset = Asset.query.get_or_404(asset_id)
