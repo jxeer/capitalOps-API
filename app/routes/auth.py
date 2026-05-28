@@ -102,6 +102,21 @@ def login():
     return jsonify({"mfaRequired": True}), 200
 
 
+@auth_bp.route("/login/dev", methods=["POST"])
+def login_dev():
+    """Dev-only: login without MFA for script seeding. Returns token directly."""
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
+    if not username or not password:
+        return jsonify({"error": "username and password required"}), 400
+    user = User.query.filter_by(username=username).first()
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Invalid credentials"}), 401
+    token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
+    return jsonify({"accessToken": token, "user": user.to_dict()}), 200
+
+
 @limiter.limit("5 per minute")
 @auth_bp.route("/login/verify-mfa", methods=["POST"])
 def login_verify_mfa():

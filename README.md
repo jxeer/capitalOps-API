@@ -238,3 +238,21 @@ client/
 - React 18 + TypeScript
 - Vite
 - React Router
+
+---
+
+## Seed Data
+
+To populate the database with demo project data, run the standalone seed script:
+
+```bash
+python scripts/seed_demo_data.py
+```
+
+This creates 30 assets, 30 projects (one per asset), 10 vendor categories, and 6 standard milestones per project. The script is **idempotent** — it checks for existing records by name before inserting, so it is safe to run multiple times.
+
+To preview what would be created without writing to the database:
+
+```bash
+python scripts/seed_demo_data.py --dry-run
+```
