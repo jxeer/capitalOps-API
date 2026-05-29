@@ -374,15 +374,16 @@ def list_portfolios():
 @_require_api_key
 @compat_bp.route("/assets", methods=["GET"])
 def list_assets():
-    """Return all assets for the current user's portfolio, or global assets if not authenticated."""
+    """Return all assets, optionally filtered by portfolio if authenticated."""
     user = _get_user_or_none()
-    portfolio_ids = _get_user_portfolio_ids(user)
-    if portfolio_ids:
-        assets = Asset.query.filter(Asset.portfolio_id.in_(portfolio_ids)).all()
-    elif user is None:
-        assets = Asset.query.join(Portfolio).filter(Portfolio.user_id.is_(None)).all()
+    if user:
+        portfolio_ids = _get_user_portfolio_ids(user)
+        if portfolio_ids:
+            assets = Asset.query.filter(Asset.portfolio_id.in_(portfolio_ids)).all()
+        else:
+            assets = Asset.query.all()
     else:
-        assets = []
+        assets = Asset.query.all()
     return jsonify([_to_gui(a.to_dict()) for a in assets])
 
 
@@ -440,15 +441,16 @@ def create_asset():
 @_require_api_key
 @compat_bp.route("/projects", methods=["GET"])
 def list_projects():
-    """Return all projects for the current user's portfolio, or global projects if not authenticated."""
+    """Return all projects, optionally filtered by portfolio if authenticated."""
     user = _get_user_or_none()
-    portfolio_ids = _get_user_portfolio_ids(user)
-    if portfolio_ids:
-        projects = Project.query.filter(Project.portfolio_id.in_(portfolio_ids)).all()
-    elif user is None:
-        projects = Project.query.join(Portfolio).filter(Portfolio.user_id.is_(None)).all()
+    if user:
+        portfolio_ids = _get_user_portfolio_ids(user)
+        if portfolio_ids:
+            projects = Project.query.filter(Project.portfolio_id.in_(portfolio_ids)).all()
+        else:
+            projects = Project.query.all()
     else:
-        projects = []
+        projects = Project.query.all()
     return jsonify([_to_gui(p.to_dict()) for p in projects])
 
 
@@ -692,15 +694,16 @@ def create_allocation():
 @_require_api_key
 @compat_bp.route("/milestones", methods=["GET"])
 def list_milestones():
-    """Return all milestones for the current user's portfolio, or global if not authenticated."""
+    """Return all milestones, optionally filtered by portfolio if authenticated."""
     user = _get_user_or_none()
-    portfolio_ids = _get_user_portfolio_ids(user)
-    if portfolio_ids:
-        milestones = Milestone.query.filter(Milestone.portfolio_id.in_(portfolio_ids)).order_by(Milestone.target_date).all()
-    elif user is None:
-        milestones = Milestone.query.join(Portfolio).filter(Portfolio.user_id.is_(None)).order_by(Milestone.target_date).all()
+    if user:
+        portfolio_ids = _get_user_portfolio_ids(user)
+        if portfolio_ids:
+            milestones = Milestone.query.filter(Milestone.portfolio_id.in_(portfolio_ids)).order_by(Milestone.target_date).all()
+        else:
+            milestones = Milestone.query.order_by(Milestone.target_date).all()
     else:
-        milestones = []
+        milestones = Milestone.query.order_by(Milestone.target_date).all()
     return jsonify([_to_gui(m.to_dict()) for m in milestones])
 
 
