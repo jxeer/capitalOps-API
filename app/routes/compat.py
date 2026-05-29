@@ -727,10 +727,15 @@ def create_milestone():
     if not data or not data.get("projectId") or not data.get("name"):
         return jsonify({"error": "projectId and name are required"}), 400
 
-    portfolio = Portfolio.query.first()
+    user = _get_user_or_none()
+    if user:
+        portfolio = Portfolio.query.filter_by(user_id=user.id).first()
+        portfolio_id = portfolio.id if portfolio else None
+    else:
+        portfolio_id = Portfolio.query.first().id if Portfolio.query.first() else None
     milestone = Milestone(
         project_id=int(data["projectId"]),
-        portfolio_id=int(data.get("portfolioId", portfolio.id if portfolio else 1)),
+        portfolio_id=int(data.get("portfolioId", portfolio_id)),
         name=data["name"],
         category=data.get("category", ""),
         target_date=data.get("targetDate"),
@@ -784,10 +789,15 @@ def create_vendor():
     if not data or not data.get("assetId") or not data.get("name"):
         return jsonify({"error": "assetId and name are required"}), 400
 
-    portfolio = Portfolio.query.first()
+    user = _get_user_or_none()
+    if user:
+        portfolio = Portfolio.query.filter_by(user_id=user.id).first()
+        portfolio_id = portfolio.id if portfolio else None
+    else:
+        portfolio_id = Portfolio.query.first().id if Portfolio.query.first() else None
     vendor = Vendor(
         asset_id=int(data["assetId"]),
-        portfolio_id=int(data.get("portfolioId", portfolio.id if portfolio else 1)),
+        portfolio_id=int(data.get("portfolioId", portfolio_id)),
         name=data["name"],
         type=data.get("type", ""),
         coi_status=data.get("coiStatus", "Pending"),
@@ -838,11 +848,16 @@ def create_work_order():
     if not data or not data.get("vendorId") or not data.get("assetId"):
         return jsonify({"error": "vendorId and assetId are required"}), 400
 
-    portfolio = Portfolio.query.first()
+    user = _get_user_or_none()
+    if user:
+        portfolio = Portfolio.query.filter_by(user_id=user.id).first()
+        portfolio_id = portfolio.id if portfolio else None
+    else:
+        portfolio_id = Portfolio.query.first().id if Portfolio.query.first() else None
     wo = WorkOrder(
         vendor_id=int(data["vendorId"]),
         asset_id=int(data["assetId"]),
-        portfolio_id=int(data.get("portfolioId", portfolio.id if portfolio else 1)),
+        portfolio_id=int(data.get("portfolioId", portfolio_id)),
         type=data.get("type", ""),
         priority=data.get("priority", "Medium"),
         cost=data.get("cost", 0),
@@ -1160,10 +1175,15 @@ def create_risk_flag():
     if not data or not data.get("projectId"):
         return jsonify({"error": "projectId is required"}), 400
 
-    portfolio = Portfolio.query.first()
+    user = _get_user_or_none()
+    if user:
+        portfolio = Portfolio.query.filter_by(user_id=user.id).first()
+        portfolio_id = portfolio.id if portfolio else None
+    else:
+        portfolio_id = Portfolio.query.first().id if Portfolio.query.first() else None
     rf = RiskFlag(
         project_id=int(data["projectId"]),
-        portfolio_id=int(data.get("portfolioId", portfolio.id if portfolio else 1)),
+        portfolio_id=int(data.get("portfolioId", portfolio_id)),
         category=data.get("category", ""),
         severity=data.get("severity", "Medium"),
         description=data.get("description", ""),
