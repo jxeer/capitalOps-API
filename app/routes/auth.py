@@ -241,8 +241,8 @@ def _send_mfa_email(user, code):
         })
         logging.info(f"[MFA] Code sent to {user.email}, id: {email}")
         return {}
-    except resend.common.ResendApiError as e:
-        logging.error(f"[MFA] Resend API error: {e.status_code} - {e.body}")
+    except resend.exceptions.ResendError as e:
+        logging.error(f"[MFA] Resend API error sending to {user.email}: {e}")
         logging.warning(f"[MFA] Code (fallback) for {user.email}: {code}")
         return {"code": code}
     except Exception as e:
