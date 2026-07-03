@@ -1299,36 +1299,56 @@ def delete_risk_flag(rf_id):
 @compat_bp.route("/connection-requests", methods=["GET"])
 @_require_api_key
 def list_connection_requests():
-    """List connection requests for the current user (as receiver)."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
-    requests = ConnectionRequest.query.filter_by(receiver_id=int(user_id)).all()
+    """List connection requests for the current user (as receiver).
+
+    Current user resolved from JWT — not the spoofable X-User-ID header.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
+    requests = ConnectionRequest.query.filter_by(receiver_id=user.id).all()
     return jsonify([r.to_dict() for r in requests])
 
 
 @compat_bp.route("/connection-requests", methods=["POST"])
 @_require_api_key
 def send_connection_request():
-    """Send a connection request to another user."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Send a connection request to another user.
+
+    Sender resolved from JWT. Body matches what connection-request-button.tsx
+    sends: `receiverId` (string ID per compat convention) and optional
+    `message`.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     data = request.get_json()
     if not data or not data.get("receiverId"):
         return jsonify({"error": "receiverId is required"}), 400
-    
-    sender_id = int(user_id)
-    receiver_id = int(data["receiverId"])
+
+    sender_id = user.id
+    try:
+        # Frontend sends string IDs (compat convention) — coerce to int.
+        receiver_id = int(data["receiverId"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "receiverId must be a numeric ID"}), 400
     message = data.get("message", "")
-    
+
+    if sender_id == receiver_id:
+        return jsonify({"error": "Cannot send a connection request to yourself"}), 400
+
+    # A pair may already be linked in either direction, so check both
+    # orderings. Must use SQLAlchemy and_()/or_() — Python's `and` keyword
+    # evaluates column comparisons as truthy objects and builds wrong SQL.
     existing = ConnectionRequest.query.filter(
-        (ConnectionRequest.sender_id == sender_id and ConnectionRequest.receiver_id == receiver_id) |
-        (ConnectionRequest.sender_id == receiver_id and ConnectionRequest.receiver_id == sender_id)
+        or_(
+            and_(ConnectionRequest.sender_id == sender_id, ConnectionRequest.receiver_id == receiver_id),
+            and_(ConnectionRequest.sender_id == receiver_id, ConnectionRequest.receiver_id == sender_id),
+        )
     ).first()
-    
+
     if existing:
         return jsonify({"error": "Connection already exists or request pending"}), 400
     
@@ -1347,15 +1367,18 @@ def send_connection_request():
 @compat_bp.route("/connection-requests/<int:req_id>", methods=["PUT"])
 @_require_api_key
 def update_connection_request(req_id):
-    """Accept or decline a connection request."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Accept or decline a connection request. Current user from JWT.
+
+    Only the receiver of the request may respond (unchanged rule).
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     req = ConnectionRequest.query.get_or_404(req_id)
-    
-    if req.receiver_id != int(user_id):
-        return jsonify({"error": " Not authorized to update this request"}), 403
+
+    if req.receiver_id != user.id:
+        return jsonify({"error": "Not authorized to update this request"}), 403
     
     data = request.get_json()
     if not data or not data.get("status"):
@@ -1374,14 +1397,17 @@ def update_connection_request(req_id):
 @compat_bp.route("/connection-requests/<int:req_id>", methods=["DELETE"])
 @_require_api_key
 def delete_connection_request(req_id):
-    """Withdraw a connection request."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Withdraw a connection request. Current user from JWT.
+
+    Only the original sender may withdraw (unchanged rule).
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     req = ConnectionRequest.query.get_or_404(req_id)
-    
-    if req.sender_id != int(user_id):
+
+    if req.sender_id != user.id:
         return jsonify({"error": "Not authorized to delete this request"}), 403
     
     db.session.delete(req)
@@ -1394,22 +1420,24 @@ def delete_connection_request(req_id):
 @compat_bp.route("/connections", methods=["GET"])
 @_require_api_key
 def list_connections():
-    """Get all connected users for the current user."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Get all connected users for the current user (resolved from JWT)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
+    # Accepted requests where the user is on either side of the link.
     requests = ConnectionRequest.query.filter(
-        (ConnectionRequest.sender_id == int(user_id)) | (ConnectionRequest.receiver_id == int(user_id))
+        or_(ConnectionRequest.sender_id == user.id, ConnectionRequest.receiver_id == user.id)
     ).filter_by(status="accepted").all()
-    
+
+    # Return the *other* party of each accepted connection.
     connections = []
     for req in requests:
-        if req.sender_id == int(user_id):
+        if req.sender_id == user.id:
             connections.append(req.receiver.to_dict())
         else:
             connections.append(req.sender.to_dict())
-    
+
     return jsonify(connections)
 
 
@@ -1417,12 +1445,13 @@ def list_connections():
 @compat_bp.route("/connection-pending", methods=["GET"])
 @_require_api_key
 def list_pending_requests():
-    """Get all pending incoming connection requests for the current user."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
-    requests = ConnectionRequest.query.filter_by(receiver_id=int(user_id), status="pending").all()
+    """Get all pending incoming connection requests for the current user
+    (resolved from JWT)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
+    requests = ConnectionRequest.query.filter_by(receiver_id=user.id, status="pending").all()
     return jsonify([r.to_dict() for r in requests])
 
 
