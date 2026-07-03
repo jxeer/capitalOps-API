@@ -40,6 +40,7 @@ from functools import wraps
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
+from sqlalchemy import and_, or_
 from app import db, limiter
 from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
@@ -284,9 +285,60 @@ def update_user_profile():
     
     if "profileImage" in data:
         user.profile_image = data["profileImage"]
-    
+
     db.session.commit()
     return jsonify(user.to_dict())
+
+
+@compat_bp.route("/users", methods=["GET"])
+def list_users():
+    """Return other users for the Connections page's user discovery/search.
+
+    Auth: requires an authenticated user (JWT or session); returns 401
+    otherwise. Unlike the list_* data endpoints, there is no anonymous
+    branch — user discovery is only for logged-in members.
+
+    Query params:
+        search (optional) — case-insensitive partial match against
+        username, full_name, or email. Email is searchable but NOT
+        returned in the response.
+
+    Response: bare array of camelCase objects (per compat conventions),
+    each containing only safe public fields: id, username, fullName,
+    role, profileImage. Fields are explicitly whitelisted below rather
+    than using User.to_dict(), so credentials (password_hash), reset
+    tokens, and MFA data can never leak if the model grows. No
+    portfolio/asset/project data is exposed, so this endpoint does not
+    conflict with the workspace isolation model.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
+    # Exclude the requesting user — discovery lists only *other* members.
+    query = User.query.filter(User.id != user.id)
+
+    search = (request.args.get("search") or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(or_(
+            User.username.ilike(pattern),
+            User.full_name.ilike(pattern),
+            User.email.ilike(pattern),
+        ))
+
+    users = query.order_by(User.username).all()
+    return jsonify([
+        _to_gui({
+            "id": u.id,
+            "username": u.username,
+            "full_name": u.full_name,
+            "role": u.role,
+            "profile_image": u.profile_image,
+        })
+        for u in users
+    ])
+
 
 # ---------------------------------------------------------------------------
 # Dashboard Stats
@@ -1378,48 +1430,70 @@ def list_pending_requests():
 @compat_bp.route("/conversations", methods=["GET"])
 @_require_api_key
 def list_conversations():
-    """List all conversations for the current user."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """List all conversations the current user participates in.
+
+    The current user is resolved from the JWT (via _get_user_from_request),
+    NOT from a client-supplied X-User-ID header — the header let any caller
+    impersonate any user by picking an arbitrary ID.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
+    # The user may be on either side of the conversation row.
     conversations = Conversation.query.filter(
-        (Conversation.user_id1 == int(user_id)) | (Conversation.user_id2 == int(user_id))
+        or_(Conversation.user_id1 == user.id, Conversation.user_id2 == user.id)
     ).all()
-    
+
     return jsonify([c.to_dict() for c in conversations])
 
 
 @compat_bp.route("/conversations", methods=["POST"])
 @_require_api_key
 def create_conversation():
-    """Create or get a conversation with another user."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Create (or return the existing) conversation with another user.
+
+    Matches what communication-center.tsx actually sends: the current user
+    comes from the JWT and the target user from `otherUserId` in the JSON
+    body (previously this read an X-User-ID header and a `userId` body key,
+    which the frontend never sent).
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     data = request.get_json()
-    if not data or not data.get("userId"):
-        return jsonify({"error": "userId is required"}), 400
-    
-    user1_id = int(user_id)
-    user2_id = int(data["userId"])
-    
+    if not data or not data.get("otherUserId"):
+        return jsonify({"error": "otherUserId is required"}), 400
+
+    user1_id = user.id
+    try:
+        # Frontend sends string IDs (compat convention) — coerce to int.
+        user2_id = int(data["otherUserId"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "otherUserId must be a numeric ID"}), 400
+
     if user1_id == user2_id:
         return jsonify({"error": "Cannot create conversation with yourself"}), 400
-    
+
+    # A conversation between two users may have been stored with either user
+    # in the user_id1 slot, so check both orderings. This must use
+    # SQLAlchemy's and_()/or_() — Python's `and` keyword evaluates column
+    # comparisons as truthy objects and silently produces the wrong SQL.
     existing = Conversation.query.filter(
-        (Conversation.user_id1 == user1_id and Conversation.user_id2 == user2_id) |
-        (Conversation.user_id1 == user2_id and Conversation.user_id2 == user1_id)
+        or_(
+            and_(Conversation.user_id1 == user1_id, Conversation.user_id2 == user2_id),
+            and_(Conversation.user_id1 == user2_id, Conversation.user_id2 == user1_id),
+        )
     ).first()
-    
+
     if existing:
         return jsonify(existing.to_dict())
-    
+
     conv = Conversation(user_id1=user1_id, user_id2=user2_id)
     db.session.add(conv)
     db.session.commit()
-    
+
     return jsonify(conv.to_dict()), 201
 
 
@@ -1427,20 +1501,21 @@ def create_conversation():
 @compat_bp.route("/messages", methods=["GET"])
 @_require_api_key
 def list_messages():
-    """Get messages in a conversation."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Get messages in a conversation. Current user resolved from JWT."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     conversation_id = request.args.get("conversationId")
     if not conversation_id:
         return jsonify({"error": "conversationId is required"}), 400
-    
+
     conv = Conversation.query.get_or_404(int(conversation_id))
-    
-    if conv.user_id1 != int(user_id) and conv.user_id2 != int(user_id):
+
+    # Only participants may read the thread.
+    if conv.user_id1 != user.id and conv.user_id2 != user.id:
         return jsonify({"error": "Not authorized to view this conversation"}), 403
-    
+
     messages = Message.query.filter_by(conversation_id=int(conversation_id)).all()
     return jsonify([m.to_dict() for m in messages])
 
@@ -1448,43 +1523,44 @@ def list_messages():
 @compat_bp.route("/messages", methods=["POST"])
 @_require_api_key
 def send_message():
-    """Send a message in a conversation."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Send a message in a conversation. Sender resolved from JWT."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     data = request.get_json()
     if not data or not data.get("conversationId") or not data.get("content"):
         return jsonify({"error": "conversationId and content are required"}), 400
-    
+
     conv = Conversation.query.get_or_404(int(data["conversationId"]))
-    
-    if conv.user_id1 != int(user_id) and conv.user_id2 != int(user_id):
+
+    # Only participants may post to the thread.
+    if conv.user_id1 != user.id and conv.user_id2 != user.id:
         return jsonify({"error": "Not authorized to send messages to this conversation"}), 403
-    
+
     msg = Message(
         conversation_id=int(data["conversationId"]),
-        sender_id=int(user_id),
+        sender_id=user.id,
         content=data["content"]
     )
     db.session.add(msg)
     db.session.commit()
-    
+
     return jsonify(msg.to_dict()), 201
 
 
 @compat_bp.route("/messages/<int:msg_id>", methods=["PUT"])
 @_require_api_key
 def update_message(msg_id):
-    """Mark a message as read."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Mark a message as read. Current user resolved from JWT."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     msg = Message.query.get_or_404(msg_id)
-    
+
     conv = Conversation.query.get_or_404(msg.conversation_id)
-    if conv.user_id1 != int(user_id) and conv.user_id2 != int(user_id):
+    if conv.user_id1 != user.id and conv.user_id2 != user.id:
         return jsonify({"error": "Not authorized to update this message"}), 403
     
     msg.read_at = datetime.utcnow()
@@ -1496,14 +1572,14 @@ def update_message(msg_id):
 @compat_bp.route("/messages/<int:msg_id>", methods=["DELETE"])
 @_require_api_key
 def delete_message(msg_id):
-    """Delete a message."""
-    user_id = request.headers.get("X-User-ID")
-    if not user_id:
-        return jsonify({"error": "X-User-ID header required"}), 400
-    
+    """Delete a message. Only the original sender (from JWT) may delete."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+
     msg = Message.query.get_or_404(msg_id)
-    
-    if msg.sender_id != int(user_id):
+
+    if msg.sender_id != user.id:
         return jsonify({"error": "Not authorized to delete this message"}), 403
     
     db.session.delete(msg)
