@@ -399,6 +399,24 @@ def seed_demo_data(force=False):
         admin_user.email = "julian.xeer@gmail.com"
         db.session.commit()
 
+    # Secondary sponsor admin — personal investor account
+    # Idempotent: only create if missing, but always keep email in sync.
+    # Runs unconditionally so the user exists regardless of demo-data guard below.
+    jxeer = User.query.filter_by(username="jxeer").first()
+    if not jxeer:
+        jxeer = User(
+            username="jxeer",
+            email="aspaciousmind@gmail.com",
+            role="sponsor_admin",
+            full_name="Julian Xeer",
+        )
+        jxeer.set_password("jxeer123")
+        db.session.add(jxeer)
+        db.session.flush()
+    elif jxeer.email != "aspaciousmind@gmail.com":
+        jxeer.email = "aspaciousmind@gmail.com"
+        db.session.flush()
+
     # Guard: Only seed demo data if database is completely empty (or force=True)
     if not force and User.query.count() > 1:  # More than just the admin we just created
         return

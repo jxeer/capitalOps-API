@@ -97,9 +97,22 @@ def login():
     # The code is stored hashed in DB and marked used after successful verification
     mfa_code = MfaCode.generate_code(user.id, expiry_minutes=5)
 
-    _send_mfa_email(user, mfa_code.plaintext_code)
+    send_result = _send_mfa_email(user, mfa_code.plaintext_code)
 
-    return jsonify({"mfaRequired": True}), 200
+    # In non-production environments, if email send failed, include the code
+    # in the response so the developer can complete login without email access.
+    # Production builds with a working RESEND_API_KEY and verified sender will
+    # never hit this branch and the code stays in the email only.
+    flask_env = os.environ.get("FLASK_ENV", "production").lower()
+    response_body = {"mfaRequired": True}
+    if flask_env != "production" and send_result.get("code"):
+        response_body["mfaCode"] = send_result["code"]
+        logging.info(
+            f"[MFA] Dev fallback: returning code in response for {user.username} "
+            f"(email send did not succeed)"
+        )
+
+    return jsonify(response_body), 200
 
 
 @auth_bp.route("/login/dev", methods=["POST"])
@@ -232,9 +245,11 @@ def _send_mfa_email(user, code):
     try:
         import resend
         resend.api_key = resend_key
-        logging.info(f"[MFA] Attempting to send to {user.email} from onboarding@resend.dev")
+        # Sender address is configurable via env; falls back to the verified default
+        mail_from = os.environ.get("MAIL_FROM_EMAIL", "CapitalOps <login@capitalops.app>")
+        logging.info(f"[MFA] Attempting to send to {user.email} from {mail_from}")
         email = resend.Emails.send({
-            "from": "CapitalOps <onboarding@resend.dev>",
+            "from": mail_from,
             "to": [user.email],
             "subject": "Your CapitalOps login code",
             "html": email_html
@@ -498,8 +513,9 @@ def _send_reset_email(user, token):
         resend.api_key = resend_key
         
         # Send password reset email via Resend
+        # Sender address is configurable via env; falls back to the verified default
         email = resend.Emails.send({
-            "from": "CapitalOps <onboarding@resend.dev>",
+            "from": os.environ.get("MAIL_FROM_EMAIL", "CapitalOps <login@capitalops.app>"),
             "to": [user.email],
             "subject": "Reset your CapitalOps password",
             "html": email_html
