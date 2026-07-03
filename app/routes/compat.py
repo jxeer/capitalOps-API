@@ -374,16 +374,21 @@ def list_portfolios():
 @_require_api_key
 @compat_bp.route("/assets", methods=["GET"])
 def list_assets():
-    """Return all assets, optionally filtered by portfolio if authenticated."""
+    """Return the assets belonging to the current user's portfolios.
+
+    Data-isolation rules (mirrors list_deals):
+    - Authenticated with portfolios -> assets filtered to those portfolios.
+    - Authenticated with NO portfolios -> empty list. Previously this fell
+      through to Asset.query.all(), leaking every user's assets.
+    - Unauthenticated (no/invalid JWT) -> empty list. The app is login-gated,
+      so the API key alone must not expose any records.
+    """
     user = _get_user_or_none()
-    if user:
-        portfolio_ids = _get_user_portfolio_ids(user)
-        if portfolio_ids:
-            assets = Asset.query.filter(Asset.portfolio_id.in_(portfolio_ids)).all()
-        else:
-            assets = Asset.query.all()
+    portfolio_ids = _get_user_portfolio_ids(user) if user else []
+    if portfolio_ids:
+        assets = Asset.query.filter(Asset.portfolio_id.in_(portfolio_ids)).all()
     else:
-        assets = Asset.query.all()
+        assets = []
     return jsonify([_to_gui(a.to_dict()) for a in assets])
 
 
@@ -441,16 +446,21 @@ def create_asset():
 @_require_api_key
 @compat_bp.route("/projects", methods=["GET"])
 def list_projects():
-    """Return all projects, optionally filtered by portfolio if authenticated."""
+    """Return the projects belonging to the current user's portfolios.
+
+    Data-isolation rules (mirrors list_deals):
+    - Authenticated with portfolios -> projects filtered to those portfolios.
+    - Authenticated with NO portfolios -> empty list. Previously this fell
+      through to Project.query.all(), leaking every user's projects.
+    - Unauthenticated (no/invalid JWT) -> empty list. The app is login-gated,
+      so the API key alone must not expose any records.
+    """
     user = _get_user_or_none()
-    if user:
-        portfolio_ids = _get_user_portfolio_ids(user)
-        if portfolio_ids:
-            projects = Project.query.filter(Project.portfolio_id.in_(portfolio_ids)).all()
-        else:
-            projects = Project.query.all()
+    portfolio_ids = _get_user_portfolio_ids(user) if user else []
+    if portfolio_ids:
+        projects = Project.query.filter(Project.portfolio_id.in_(portfolio_ids)).all()
     else:
-        projects = Project.query.all()
+        projects = []
     return jsonify([_to_gui(p.to_dict()) for p in projects])
 
 
