@@ -38,7 +38,7 @@ import os
 import uuid
 from functools import wraps
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, abort
 from flask_cors import cross_origin
 from sqlalchemy import and_, or_
 from app import db, limiter
@@ -259,6 +259,24 @@ def _get_user_or_none():
         return None
 
 
+def _get_portfolio_scoped_or_404(model, record_id, user):
+    """Fetch a portfolio-owned record by ID, enforcing workspace isolation.
+
+    Returns the record only if its portfolio_id belongs to the given user
+    (same ownership model the list endpoints use). Aborts with 404 both when
+    the ID doesn't exist AND when it belongs to another user — a 403 would
+    confirm the record exists, so out-of-scope IDs must be indistinguishable
+    from missing ones.
+
+    Used by the by-ID GET/PUT/DELETE handlers for assets, projects, deals,
+    and vendors. Investors are scoped by user_id instead (see get_investor).
+    """
+    record = model.query.get_or_404(record_id)
+    if record.portfolio_id not in _get_user_portfolio_ids(user):
+        abort(404)
+    return record
+
+
 @compat_bp.route("/user", methods=["GET"])
 def get_user():
     """Return the current authenticated user from JWT token or session."""
@@ -447,8 +465,11 @@ def list_assets():
 @_require_api_key
 @compat_bp.route("/assets/<int:asset_id>", methods=["GET"])
 def get_asset(asset_id):
-    """Return a single asset by ID."""
-    asset = Asset.query.get_or_404(asset_id)
+    """Return a single asset by ID (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
     return jsonify(_to_gui(asset.to_dict()))
 
 
@@ -519,8 +540,11 @@ def list_projects():
 @_require_api_key
 @compat_bp.route("/projects/<int:project_id>", methods=["GET"])
 def get_project(project_id):
-    """Return a single project by ID."""
-    project = Project.query.get_or_404(project_id)
+    """Return a single project by ID (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    project = _get_portfolio_scoped_or_404(Project, project_id, user)
     return jsonify(_to_gui(project.to_dict()))
 
 
@@ -591,8 +615,11 @@ def list_deals():
 @_require_api_key
 @compat_bp.route("/deals/<int:deal_id>", methods=["GET"])
 def get_deal(deal_id):
-    """Return a single deal by ID."""
-    deal = Deal.query.get_or_404(deal_id)
+    """Return a single deal by ID (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
     return jsonify(_to_gui(deal.to_dict()))
 
 
@@ -656,8 +683,15 @@ def list_investors():
 @_require_api_key
 @compat_bp.route("/investors/<int:investor_id>", methods=["GET"])
 def get_investor(investor_id):
-    """Return a single investor by ID."""
+    """Return a single investor by ID (must belong to the current user)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     investor = Investor.query.get_or_404(investor_id)
+    # list_investors scopes by Investor.user_id (not portfolios) — mirror
+    # that here. 404 rather than 403 so existence isn't leaked.
+    if investor.user_id != user.id:
+        abort(404)
     return jsonify(_to_gui(investor.to_dict()))
 
 
@@ -828,14 +862,16 @@ def list_vendors():
     else:
         vendors = []
     return jsonify([_to_gui(v.to_dict()) for v in vendors])
-    return jsonify([_to_gui(v.to_dict()) for v in vendors])
 
 
 @_require_api_key
 @compat_bp.route("/vendors/<int:vendor_id>", methods=["GET"])
 def get_vendor(vendor_id):
-    """Return a single vendor by ID."""
-    vendor = Vendor.query.get_or_404(vendor_id)
+    """Return a single vendor by ID (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
     return jsonify(_to_gui(vendor.to_dict()))
 
 
@@ -965,8 +1001,11 @@ def risk_flags_by_project(project_id):
 
 @compat_bp.route("/assets/<int:asset_id>", methods=["PUT"])
 def update_asset(asset_id):
-    """Update an asset. Expects camelCase JSON body."""
-    asset = Asset.query.get_or_404(asset_id)
+    """Update an asset (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
     data = request.get_json() or {}
     if "name" in data: asset.name = data["name"]
     if "location" in data:
@@ -988,8 +1027,11 @@ def update_asset(asset_id):
 
 @compat_bp.route("/assets/<int:asset_id>", methods=["DELETE"])
 def delete_asset(asset_id):
-    """Delete an asset."""
-    asset = Asset.query.get_or_404(asset_id)
+    """Delete an asset (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
     db.session.delete(asset)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1002,8 +1044,11 @@ def delete_asset(asset_id):
 @compat_bp.route("/projects/<int:project_id>", methods=["PUT"])
 @_require_api_key
 def update_project(project_id):
-    """Update a project. Expects camelCase JSON body."""
-    project = Project.query.get_or_404(project_id)
+    """Update a project (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    project = _get_portfolio_scoped_or_404(Project, project_id, user)
     data = request.get_json() or {}
     if "phase" in data: project.phase = data["phase"]
     if "startDate" in data: project.start_date = data["startDate"]
@@ -1025,8 +1070,11 @@ def update_project(project_id):
 @compat_bp.route("/projects/<int:project_id>", methods=["DELETE"])
 @_require_api_key
 def delete_project(project_id):
-    """Delete a project."""
-    project = Project.query.get_or_404(project_id)
+    """Delete a project (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    project = _get_portfolio_scoped_or_404(Project, project_id, user)
     db.session.delete(project)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1039,8 +1087,11 @@ def delete_project(project_id):
 @compat_bp.route("/deals/<int:deal_id>", methods=["PUT"])
 @_require_api_key
 def update_deal(deal_id):
-    """Update a deal. Expects camelCase JSON body."""
-    deal = Deal.query.get_or_404(deal_id)
+    """Update a deal (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
     data = request.get_json() or {}
     if "capitalRequired" in data: deal.capital_required = data["capitalRequired"]
     if "capitalRaised" in data: deal.capital_raised = data["capitalRaised"]
@@ -1057,8 +1108,11 @@ def update_deal(deal_id):
 @compat_bp.route("/deals/<int:deal_id>", methods=["DELETE"])
 @_require_api_key
 def delete_deal(deal_id):
-    """Delete a deal."""
-    deal = Deal.query.get_or_404(deal_id)
+    """Delete a deal (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
     db.session.delete(deal)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1071,8 +1125,14 @@ def delete_deal(deal_id):
 @compat_bp.route("/investors/<int:investor_id>", methods=["PUT"])
 @_require_api_key
 def update_investor(investor_id):
-    """Update an investor. Expects camelCase JSON body."""
+    """Update an investor (must belong to the current user)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     investor = Investor.query.get_or_404(investor_id)
+    # Scoped by user_id like list_investors; 404 hides existence.
+    if investor.user_id != user.id:
+        abort(404)
     data = request.get_json() or {}
     if "name" in data: investor.name = data["name"]
     if "accreditationStatus" in data: investor.accreditation_status = data["accreditationStatus"]
@@ -1093,8 +1153,14 @@ def update_investor(investor_id):
 @compat_bp.route("/investors/<int:investor_id>", methods=["DELETE"])
 @_require_api_key
 def delete_investor(investor_id):
-    """Delete an investor."""
+    """Delete an investor (must belong to the current user)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     investor = Investor.query.get_or_404(investor_id)
+    # Scoped by user_id like list_investors; 404 hides existence.
+    if investor.user_id != user.id:
+        abort(404)
     db.session.delete(investor)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1107,8 +1173,14 @@ def delete_investor(investor_id):
 @compat_bp.route("/allocations/<int:allocation_id>", methods=["PUT"])
 @_require_api_key
 def update_allocation(allocation_id):
-    """Update an allocation. Expects camelCase JSON body."""
+    """Update an allocation (its parent deal must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     allocation = Allocation.query.get_or_404(allocation_id)
+    # Allocations have no portfolio_id of their own — ownership chains
+    # through the parent deal. The helper 404s if the deal isn't ours.
+    _get_portfolio_scoped_or_404(Deal, allocation.deal_id, user)
     data = request.get_json() or {}
     if "softCommitAmount" in data: allocation.soft_commit_amount = data["softCommitAmount"]
     if "hardCommitAmount" in data: allocation.hard_commit_amount = data["hardCommitAmount"]
@@ -1123,8 +1195,13 @@ def update_allocation(allocation_id):
 @compat_bp.route("/allocations/<int:allocation_id>", methods=["DELETE"])
 @_require_api_key
 def delete_allocation(allocation_id):
-    """Delete an allocation."""
+    """Delete an allocation (its parent deal must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     allocation = Allocation.query.get_or_404(allocation_id)
+    # Ownership chains through the parent deal (see update_allocation).
+    _get_portfolio_scoped_or_404(Deal, allocation.deal_id, user)
     db.session.delete(allocation)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1137,8 +1214,14 @@ def delete_allocation(allocation_id):
 @compat_bp.route("/milestones/<int:milestone_id>", methods=["PUT"])
 @_require_api_key
 def update_milestone(milestone_id):
-    """Update a milestone. Expects camelCase JSON body."""
+    """Update a milestone (its parent project must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     milestone = Milestone.query.get_or_404(milestone_id)
+    # Milestones have no portfolio_id of their own — ownership chains
+    # through the parent project. The helper 404s if it isn't ours.
+    _get_portfolio_scoped_or_404(Project, milestone.project_id, user)
     data = request.get_json() or {}
     if "name" in data: milestone.name = data["name"]
     if "category" in data: milestone.category = data["category"]
@@ -1154,8 +1237,13 @@ def update_milestone(milestone_id):
 @compat_bp.route("/milestones/<int:milestone_id>", methods=["DELETE"])
 @_require_api_key
 def delete_milestone(milestone_id):
-    """Delete a milestone."""
+    """Delete a milestone (its parent project must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     milestone = Milestone.query.get_or_404(milestone_id)
+    # Ownership chains through the parent project (see update_milestone).
+    _get_portfolio_scoped_or_404(Project, milestone.project_id, user)
     db.session.delete(milestone)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1168,8 +1256,11 @@ def delete_milestone(milestone_id):
 @compat_bp.route("/vendors/<int:vendor_id>", methods=["PUT"])
 @_require_api_key
 def update_vendor(vendor_id):
-    """Update a vendor. Expects camelCase JSON body."""
-    vendor = Vendor.query.get_or_404(vendor_id)
+    """Update a vendor (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
     data = request.get_json() or {}
     if "name" in data: vendor.name = data["name"]
     if "type" in data: vendor.type = data["type"]
@@ -1183,8 +1274,11 @@ def update_vendor(vendor_id):
 @compat_bp.route("/vendors/<int:vendor_id>", methods=["DELETE"])
 @_require_api_key
 def delete_vendor(vendor_id):
-    """Delete a vendor."""
-    vendor = Vendor.query.get_or_404(vendor_id)
+    """Delete a vendor (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
     db.session.delete(vendor)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1197,8 +1291,14 @@ def delete_vendor(vendor_id):
 @compat_bp.route("/work-orders/<int:wo_id>", methods=["PUT"])
 @_require_api_key
 def update_work_order(wo_id):
-    """Update a work order. Expects camelCase JSON body."""
+    """Update a work order (its parent vendor must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     wo = WorkOrder.query.get_or_404(wo_id)
+    # Work orders have no portfolio_id of their own — ownership chains
+    # through the parent vendor. The helper 404s if it isn't ours.
+    _get_portfolio_scoped_or_404(Vendor, wo.vendor_id, user)
     data = request.get_json() or {}
     if "type" in data: wo.type = data["type"]
     if "priority" in data: wo.priority = data["priority"]
@@ -1214,8 +1314,13 @@ def update_work_order(wo_id):
 @compat_bp.route("/work-orders/<int:wo_id>", methods=["DELETE"])
 @_require_api_key
 def delete_work_order(wo_id):
-    """Delete a work order."""
+    """Delete a work order (its parent vendor must be in the user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
     wo = WorkOrder.query.get_or_404(wo_id)
+    # Ownership chains through the parent vendor (see update_work_order).
+    _get_portfolio_scoped_or_404(Vendor, wo.vendor_id, user)
     db.session.delete(wo)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1259,8 +1364,12 @@ def create_risk_flag():
 @compat_bp.route("/risk-flags/<int:rf_id>", methods=["PUT"])
 @_require_api_key
 def update_risk_flag(rf_id):
-    """Update a risk flag. Expects camelCase JSON body."""
-    rf = RiskFlag.query.get_or_404(rf_id)
+    """Update a risk flag (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    # RiskFlag carries its own portfolio_id, so scope it directly.
+    rf = _get_portfolio_scoped_or_404(RiskFlag, rf_id, user)
     data = request.get_json() or {}
     if "category" in data: rf.category = data["category"]
     if "severity" in data: rf.severity = data["severity"]
@@ -1276,8 +1385,11 @@ def update_risk_flag(rf_id):
 @compat_bp.route("/risk-flags/<int:rf_id>", methods=["DELETE"])
 @_require_api_key
 def delete_risk_flag(rf_id):
-    """Delete a risk flag."""
-    rf = RiskFlag.query.get_or_404(rf_id)
+    """Delete a risk flag (must be in the current user's portfolios)."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    rf = _get_portfolio_scoped_or_404(RiskFlag, rf_id, user)
     db.session.delete(rf)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1617,45 +1729,69 @@ def delete_message(msg_id):
     return jsonify({"deleted": True})
 
 
+# Allowlist of profile fields writable via PUT /users/<id>, mapped
+# camelCase request key -> User model attribute. Anything not listed here is
+# silently ignored — in particular role, email, username, password_hash,
+# google_id, MFA/reset fields, and profile_status (account status includes
+# "suspended", so letting users write it would allow self-unsuspension).
+_USER_PROFILE_WRITABLE = {
+    # Profile fields
+    "fullName": "full_name",
+    "profileType": "profile_type",
+    "profileImage": "profile_image",
+    "title": "title",
+    "organization": "organization",
+    "linkedInUrl": "linked_in_url",
+    "bio": "bio",
+    # Investor fields
+    "geographicFocus": "geographic_focus",
+    "investmentStage": "investment_stage",
+    "targetReturn": "target_return",
+    "checkSizeMin": "check_size_min",
+    "checkSizeMax": "check_size_max",
+    "riskTolerance": "risk_tolerance",
+    "strategicInterest": "strategic_interest",
+    # Vendor fields
+    "serviceTypes": "service_types",
+    "geographicServiceArea": "geographic_service_area",
+    "yearsOfExperience": "years_of_experience",
+    "certifications": "certifications",
+    "averageProjectSize": "average_project_size",
+    # Developer fields
+    "developmentFocus": "development_focus",
+    "developmentType": "development_type",
+    "teamSize": "team_size",
+    "portfolioValue": "portfolio_value",
+}
+
+
 @compat_bp.route("/users/<int:user_id>", methods=["PUT"])
 @_require_api_key
 def update_user(user_id):
-    """Update a user's profile with all new Phase 4 fields."""
-    user = User.query.get_or_404(user_id)
+    """Update the CALLER'S OWN profile (Phase 4 fields).
+
+    The caller is resolved from the JWT and may only update their own
+    record — a mismatched path ID gets a 404 (not 403) so user IDs can't
+    be probed. Writable fields are restricted to the
+    _USER_PROFILE_WRITABLE allowlist above; auth and permission fields
+    (role, email, username, password, account status) are never writable
+    through this endpoint.
+    """
+    caller = _get_user_from_request()
+    if not caller:
+        return jsonify({"message": "Authentication required"}), 401
+    if caller.id != user_id:
+        abort(404)
+
     data = request.get_json() or {}
-    
-    # Profile fields
-    if "profileType" in data: user.profile_type = data["profileType"]
-    if "profileStatus" in data: user.profile_status = data["profileStatus"]
-    if "title" in data: user.title = data["title"]
-    if "organization" in data: user.organization = data["organization"]
-    if "linkedInUrl" in data: user.linked_in_url = data["linkedInUrl"]
-    if "bio" in data: user.bio = data["bio"]
-    
-    # Investor fields
-    if "geographicFocus" in data: user.geographic_focus = data["geographicFocus"]
-    if "investmentStage" in data: user.investment_stage = data["investmentStage"]
-    if "targetReturn" in data: user.target_return = data["targetReturn"]
-    if "checkSizeMin" in data: user.check_size_min = data["checkSizeMin"]
-    if "checkSizeMax" in data: user.check_size_max = data["checkSizeMax"]
-    if "riskTolerance" in data: user.risk_tolerance = data["riskTolerance"]
-    if "strategicInterest" in data: user.strategic_interest = data["strategicInterest"]
-    
-    # Vendor fields
-    if "serviceTypes" in data: user.service_types = data["serviceTypes"]
-    if "geographicServiceArea" in data: user.geographic_service_area = data["geographicServiceArea"]
-    if "yearsOfExperience" in data: user.years_of_experience = data["yearsOfExperience"]
-    if "certifications" in data: user.certifications = data["certifications"]
-    if "averageProjectSize" in data: user.average_project_size = data["averageProjectSize"]
-    
-    # Developer fields
-    if "developmentFocus" in data: user.development_focus = data["developmentFocus"]
-    if "developmentType" in data: user.development_type = data["developmentType"]
-    if "teamSize" in data: user.team_size = data["teamSize"]
-    if "portfolioValue" in data: user.portfolio_value = data["portfolioValue"]
-    
+
+    # Apply only allowlisted fields; unknown/forbidden keys are ignored.
+    for key, attr in _USER_PROFILE_WRITABLE.items():
+        if key in data:
+            setattr(caller, attr, data[key])
+
     db.session.commit()
-    return jsonify(_to_gui(user.to_dict()))
+    return jsonify(_to_gui(caller.to_dict()))
 
 
 def _get_s3_url(file_key):
