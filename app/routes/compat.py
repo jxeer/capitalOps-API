@@ -277,6 +277,27 @@ def _get_portfolio_scoped_or_404(model, record_id, user):
     return record
 
 
+def _user_public_dict(u):
+    """Serialize a user's safe public profile fields (camelCase via _to_gui).
+
+    Single source of truth for embedding users in API responses (user
+    discovery, connections). Guarantees the display name is always under
+    the consistent `fullName` key — User.to_dict() uses mixed casing
+    (snake_case `full_name`), which broke frontend components reading
+    `fullName`. Never includes email, credentials, or auth fields.
+    """
+    return _to_gui({
+        "id": u.id,
+        "username": u.username,
+        "full_name": u.full_name,
+        "role": u.role,
+        "profile_type": u.profile_type,
+        "title": u.title,
+        "organization": u.organization,
+        "profile_image": u.profile_image,
+    })
+
+
 @compat_bp.route("/user", methods=["GET"])
 def get_user():
     """Return the current authenticated user from JWT token or session."""
@@ -322,12 +343,12 @@ def list_users():
         returned in the response.
 
     Response: bare array of camelCase objects (per compat conventions),
-    each containing only safe public fields: id, username, fullName,
-    role, profileImage. Fields are explicitly whitelisted below rather
-    than using User.to_dict(), so credentials (password_hash), reset
-    tokens, and MFA data can never leak if the model grows. No
-    portfolio/asset/project data is exposed, so this endpoint does not
-    conflict with the workspace isolation model.
+    each containing only the safe public fields from _user_public_dict
+    (id, username, fullName, role, profileType, title, organization,
+    profileImage). The explicit whitelist means credentials
+    (password_hash), reset tokens, email, and MFA data can never leak if
+    the model grows. No portfolio/asset/project data is exposed, so this
+    endpoint does not conflict with the workspace isolation model.
     """
     user = _get_user_from_request()
     if not user:
@@ -346,16 +367,7 @@ def list_users():
         ))
 
     users = query.order_by(User.username).all()
-    return jsonify([
-        _to_gui({
-            "id": u.id,
-            "username": u.username,
-            "full_name": u.full_name,
-            "role": u.role,
-            "profile_image": u.profile_image,
-        })
-        for u in users
-    ])
+    return jsonify([_user_public_dict(u) for u in users])
 
 
 # ---------------------------------------------------------------------------
@@ -1540,13 +1552,14 @@ def list_connections():
         or_(ConnectionRequest.sender_id == user.id, ConnectionRequest.receiver_id == user.id)
     ).filter_by(status="accepted").all()
 
-    # Return the *other* party of each accepted connection.
+    # Return the *other* party of each accepted connection, serialized via
+    # _user_public_dict — the raw User.to_dict() leaked email/google_id and
+    # used snake_case full_name, which the frontend (reading fullName)
+    # couldn't see, so cards fell back to showing the username.
     connections = []
     for req in requests:
-        if req.sender_id == user.id:
-            connections.append(req.receiver.to_dict())
-        else:
-            connections.append(req.sender.to_dict())
+        other = req.receiver if req.sender_id == user.id else req.sender
+        connections.append(_user_public_dict(other))
 
     return jsonify(connections)
 

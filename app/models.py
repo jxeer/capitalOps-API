@@ -659,8 +659,13 @@ class ConnectionRequest(db.Model):
             "id": self.id,
             "senderId": self.sender_id,
             "receiverId": self.receiver_id,
+            # Display name (full_name) plus username fallback for both
+            # parties, so request lists can always label who a request is
+            # from/to even when a user hasn't set a full name.
             "senderName": self.sender.full_name if self.sender else None,
+            "senderUsername": self.sender.username if self.sender else None,
             "receiverName": self.receiver.full_name if self.receiver else None,
+            "receiverUsername": self.receiver.username if self.receiver else None,
             "status": self.status,
             "message": self.message,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
@@ -688,8 +693,12 @@ class Conversation(db.Model):
             "id": self.id,
             "userId1": self.user_id1,
             "userId2": self.user_id2,
+            # Display name plus username fallback for both participants,
+            # so conversation lists can label the other party.
             "user1Name": self.user1.full_name if self.user1 else None,
+            "user1Username": self.user1.username if self.user1 else None,
             "user2Name": self.user2.full_name if self.user2 else None,
+            "user2Username": self.user2.username if self.user2 else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -716,7 +725,10 @@ class Message(db.Model):
             "id": self.id,
             "conversationId": self.conversation_id,
             "senderId": self.sender_id,
+            # Display name plus username fallback, consistent with the
+            # ConnectionRequest and Conversation serializers.
             "senderName": self.sender.full_name if self.sender else None,
+            "senderUsername": self.sender.username if self.sender else None,
             "content": self.content,
             "readAt": self.read_at.isoformat() if self.read_at else None,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
