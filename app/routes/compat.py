@@ -40,7 +40,7 @@ from functools import wraps
 from datetime import datetime
 from flask import Blueprint, request, jsonify, abort
 from flask_cors import cross_origin
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from app import db, limiter
 from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
@@ -1595,7 +1595,32 @@ def list_conversations():
         or_(Conversation.user_id1 == user.id, Conversation.user_id2 == user.id)
     ).all()
 
-    return jsonify([c.to_dict() for c in conversations])
+    # Unread = messages addressed to the caller (sender is the other
+    # participant) that have never been marked read. read_at is set by
+    # list_messages when the recipient opens the thread. One grouped query
+    # for all conversations rather than a COUNT per row.
+    unread_counts = {}
+    conv_ids = [c.id for c in conversations]
+    if conv_ids:
+        unread_counts = dict(
+            db.session.query(Message.conversation_id, func.count(Message.id))
+            .filter(
+                Message.conversation_id.in_(conv_ids),
+                Message.sender_id != user.id,
+                Message.read_at.is_(None),
+            )
+            .group_by(Message.conversation_id)
+            .all()
+        )
+
+    payload = []
+    for c in conversations:
+        d = c.to_dict()
+        # Per-conversation unread count for the CALLER specifically — not
+        # part of to_dict() because it's viewer-dependent, not row data.
+        d["unreadCount"] = unread_counts.get(c.id, 0)
+        payload.append(d)
+    return jsonify(payload)
 
 
 @compat_bp.route("/conversations", methods=["POST"])
@@ -1665,7 +1690,18 @@ def list_messages():
     if conv.user_id1 != user.id and conv.user_id2 != user.id:
         return jsonify({"error": "Not authorized to view this conversation"}), 403
 
-    messages = Message.query.filter_by(conversation_id=int(conversation_id)).all()
+    # Opening the thread marks the other participant's messages as read —
+    # this is what drives the unreadCount in list_conversations back to 0.
+    # Bulk UPDATE before the SELECT so the response carries fresh readAt.
+    marked = Message.query.filter(
+        Message.conversation_id == conv.id,
+        Message.sender_id != user.id,
+        Message.read_at.is_(None),
+    ).update({"read_at": datetime.utcnow()}, synchronize_session=False)
+    if marked:
+        db.session.commit()
+
+    messages = Message.query.filter_by(conversation_id=conv.id).all()
     return jsonify([m.to_dict() for m in messages])
 
 
