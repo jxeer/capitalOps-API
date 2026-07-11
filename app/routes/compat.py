@@ -45,7 +45,7 @@ from app import db, limiter
 from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
     Allocation, Milestone, Vendor, WorkOrder, RiskFlag, User,
-    ConnectionRequest, Conversation, Message,
+    ConnectionRequest, Conversation, Message, RecordShare,
 )
 
 compat_bp = Blueprint("compat", __name__)
@@ -259,22 +259,51 @@ def _get_user_or_none():
         return None
 
 
-def _get_portfolio_scoped_or_404(model, record_id, user):
-    """Fetch a portfolio-owned record by ID, enforcing workspace isolation.
+# Maps each shareable model class to the record_type string stored in
+# record_shares rows. Keyed by class (not tablename) because the helper
+# below receives the model class directly from its call sites.
+_RECORD_TYPE_BY_MODEL = {
+    Asset: "asset",
+    Project: "project",
+    Deal: "deal",
+    Vendor: "vendor",
+    RiskFlag: "risk_flag",
+}
 
-    Returns the record only if its portfolio_id belongs to the given user
-    (same ownership model the list endpoints use). Aborts with 404 both when
-    the ID doesn't exist AND when it belongs to another user — a 403 would
-    confirm the record exists, so out-of-scope IDs must be indistinguishable
-    from missing ones.
 
-    Used by the by-ID GET/PUT/DELETE handlers for assets, projects, deals,
-    and vendors. Investors are scoped by user_id instead (see get_investor).
+def _get_accessible_or_404(model, record_id, user, require="view"):
+    """Fetch a record by ID, enforcing ownership or an explicit share.
+
+    Access model (checked in order):
+      1. Owner: the record's portfolio_id is in the user's portfolios →
+         full access, regardless of `require`.
+      2. Shared: a RecordShare row exists for this record with
+         shared_with_id == user.id. A 'view' share satisfies require='view'
+         only; an 'edit' share satisfies both levels.
+      3. Otherwise abort 404 — not 403, both for missing IDs and
+         out-of-scope ones, so a probe can't confirm a record exists.
+
+    `require` is 'view' for GET handlers and 'edit' for PUT/DELETE handlers.
+    Parent-chain checks (allocation→deal, milestone→project, work
+    order→vendor) pass the level matching the operation on the child.
+
+    Investors are scoped by user_id instead (see get_investor).
     """
     record = model.query.get_or_404(record_id)
-    if record.portfolio_id not in _get_user_portfolio_ids(user):
-        abort(404)
-    return record
+    if record.portfolio_id in _get_user_portfolio_ids(user):
+        return record
+    share = (
+        RecordShare.query.filter_by(
+            record_type=_RECORD_TYPE_BY_MODEL[model],
+            record_id=record.id,
+            shared_with_id=user.id,
+        ).first()
+        if user
+        else None
+    )
+    if share and (require == "view" or share.access_level == "edit"):
+        return record
+    abort(404)
 
 
 def _user_public_dict(u):
@@ -481,7 +510,7 @@ def get_asset(asset_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
+    asset = _get_accessible_or_404(Asset, asset_id, user, require="view")
     return jsonify(_to_gui(asset.to_dict()))
 
 
@@ -556,7 +585,7 @@ def get_project(project_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    project = _get_portfolio_scoped_or_404(Project, project_id, user)
+    project = _get_accessible_or_404(Project, project_id, user, require="view")
     return jsonify(_to_gui(project.to_dict()))
 
 
@@ -631,7 +660,7 @@ def get_deal(deal_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
+    deal = _get_accessible_or_404(Deal, deal_id, user, require="view")
     return jsonify(_to_gui(deal.to_dict()))
 
 
@@ -883,7 +912,7 @@ def get_vendor(vendor_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
+    vendor = _get_accessible_or_404(Vendor, vendor_id, user, require="view")
     return jsonify(_to_gui(vendor.to_dict()))
 
 
@@ -1017,7 +1046,7 @@ def update_asset(asset_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
+    asset = _get_accessible_or_404(Asset, asset_id, user, require="edit")
     data = request.get_json() or {}
     if "name" in data: asset.name = data["name"]
     if "location" in data:
@@ -1043,7 +1072,7 @@ def delete_asset(asset_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    asset = _get_portfolio_scoped_or_404(Asset, asset_id, user)
+    asset = _get_accessible_or_404(Asset, asset_id, user, require="edit")
     db.session.delete(asset)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1060,7 +1089,7 @@ def update_project(project_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    project = _get_portfolio_scoped_or_404(Project, project_id, user)
+    project = _get_accessible_or_404(Project, project_id, user, require="edit")
     data = request.get_json() or {}
     if "phase" in data: project.phase = data["phase"]
     if "startDate" in data: project.start_date = data["startDate"]
@@ -1086,7 +1115,7 @@ def delete_project(project_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    project = _get_portfolio_scoped_or_404(Project, project_id, user)
+    project = _get_accessible_or_404(Project, project_id, user, require="edit")
     db.session.delete(project)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1103,7 +1132,7 @@ def update_deal(deal_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
+    deal = _get_accessible_or_404(Deal, deal_id, user, require="edit")
     data = request.get_json() or {}
     if "capitalRequired" in data: deal.capital_required = data["capitalRequired"]
     if "capitalRaised" in data: deal.capital_raised = data["capitalRaised"]
@@ -1124,7 +1153,7 @@ def delete_deal(deal_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    deal = _get_portfolio_scoped_or_404(Deal, deal_id, user)
+    deal = _get_accessible_or_404(Deal, deal_id, user, require="edit")
     db.session.delete(deal)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1192,7 +1221,7 @@ def update_allocation(allocation_id):
     allocation = Allocation.query.get_or_404(allocation_id)
     # Allocations have no portfolio_id of their own — ownership chains
     # through the parent deal. The helper 404s if the deal isn't ours.
-    _get_portfolio_scoped_or_404(Deal, allocation.deal_id, user)
+    _get_accessible_or_404(Deal, allocation.deal_id, user, require="edit")
     data = request.get_json() or {}
     if "softCommitAmount" in data: allocation.soft_commit_amount = data["softCommitAmount"]
     if "hardCommitAmount" in data: allocation.hard_commit_amount = data["hardCommitAmount"]
@@ -1213,7 +1242,7 @@ def delete_allocation(allocation_id):
         return jsonify({"message": "Authentication required"}), 401
     allocation = Allocation.query.get_or_404(allocation_id)
     # Ownership chains through the parent deal (see update_allocation).
-    _get_portfolio_scoped_or_404(Deal, allocation.deal_id, user)
+    _get_accessible_or_404(Deal, allocation.deal_id, user, require="edit")
     db.session.delete(allocation)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1233,7 +1262,7 @@ def update_milestone(milestone_id):
     milestone = Milestone.query.get_or_404(milestone_id)
     # Milestones have no portfolio_id of their own — ownership chains
     # through the parent project. The helper 404s if it isn't ours.
-    _get_portfolio_scoped_or_404(Project, milestone.project_id, user)
+    _get_accessible_or_404(Project, milestone.project_id, user, require="edit")
     data = request.get_json() or {}
     if "name" in data: milestone.name = data["name"]
     if "category" in data: milestone.category = data["category"]
@@ -1255,7 +1284,7 @@ def delete_milestone(milestone_id):
         return jsonify({"message": "Authentication required"}), 401
     milestone = Milestone.query.get_or_404(milestone_id)
     # Ownership chains through the parent project (see update_milestone).
-    _get_portfolio_scoped_or_404(Project, milestone.project_id, user)
+    _get_accessible_or_404(Project, milestone.project_id, user, require="edit")
     db.session.delete(milestone)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1272,7 +1301,7 @@ def update_vendor(vendor_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
+    vendor = _get_accessible_or_404(Vendor, vendor_id, user, require="edit")
     data = request.get_json() or {}
     if "name" in data: vendor.name = data["name"]
     if "type" in data: vendor.type = data["type"]
@@ -1290,7 +1319,7 @@ def delete_vendor(vendor_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    vendor = _get_portfolio_scoped_or_404(Vendor, vendor_id, user)
+    vendor = _get_accessible_or_404(Vendor, vendor_id, user, require="edit")
     db.session.delete(vendor)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1310,7 +1339,7 @@ def update_work_order(wo_id):
     wo = WorkOrder.query.get_or_404(wo_id)
     # Work orders have no portfolio_id of their own — ownership chains
     # through the parent vendor. The helper 404s if it isn't ours.
-    _get_portfolio_scoped_or_404(Vendor, wo.vendor_id, user)
+    _get_accessible_or_404(Vendor, wo.vendor_id, user, require="edit")
     data = request.get_json() or {}
     if "type" in data: wo.type = data["type"]
     if "priority" in data: wo.priority = data["priority"]
@@ -1332,7 +1361,7 @@ def delete_work_order(wo_id):
         return jsonify({"message": "Authentication required"}), 401
     wo = WorkOrder.query.get_or_404(wo_id)
     # Ownership chains through the parent vendor (see update_work_order).
-    _get_portfolio_scoped_or_404(Vendor, wo.vendor_id, user)
+    _get_accessible_or_404(Vendor, wo.vendor_id, user, require="edit")
     db.session.delete(wo)
     db.session.commit()
     return jsonify({"deleted": True})
@@ -1381,7 +1410,7 @@ def update_risk_flag(rf_id):
     if not user:
         return jsonify({"message": "Authentication required"}), 401
     # RiskFlag carries its own portfolio_id, so scope it directly.
-    rf = _get_portfolio_scoped_or_404(RiskFlag, rf_id, user)
+    rf = _get_accessible_or_404(RiskFlag, rf_id, user, require="edit")
     data = request.get_json() or {}
     if "category" in data: rf.category = data["category"]
     if "severity" in data: rf.severity = data["severity"]
@@ -1401,7 +1430,7 @@ def delete_risk_flag(rf_id):
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
-    rf = _get_portfolio_scoped_or_404(RiskFlag, rf_id, user)
+    rf = _get_accessible_or_404(RiskFlag, rf_id, user, require="edit")
     db.session.delete(rf)
     db.session.commit()
     return jsonify({"deleted": True})

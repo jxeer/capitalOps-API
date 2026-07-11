@@ -634,10 +634,57 @@ class RiskFlag(db.Model):
         }
 
 
+class RecordShare(db.Model):
+    """
+    A grant of access to one record for one user, across portfolio boundaries.
+
+    Foundation for record sharing: an owner (whose portfolio contains the
+    record) shares a single asset/project/deal/vendor with another user at
+    'view' or 'edit' level. Access checks live in
+    compat._get_accessible_or_404 — owners always have full access via
+    portfolio scoping; non-owners get access only through a row here.
+
+    A polymorphic (record_type, record_id) pair is used instead of one FK
+    per shareable table so a single table covers every record type without
+    altering existing tables (the Alembic chain is broken; this brand-new
+    table is created by db.create_all() at startup).
+
+    No sharing endpoints or UI exist yet, so this table stays empty and
+    behavior is unchanged until they're built.
+    """
+    __tablename__ = "record_shares"
+    __table_args__ = (
+        # One share per (record, recipient) — re-sharing should update the
+        # existing row's access_level, not stack duplicate grants.
+        db.UniqueConstraint("record_type", "record_id", "shared_with_id",
+                            name="uq_record_share_target"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    record_type = db.Column(db.String(50), nullable=False)   # 'asset' / 'project' / 'deal' / 'vendor'
+    record_id = db.Column(db.Integer, nullable=False)         # ID within that record type's table
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)        # who granted the share
+    shared_with_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)  # who receives access
+    access_level = db.Column(db.String(20), nullable=False, default="view")  # 'view' or 'edit'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        """Serialize record share to a JSON-safe dictionary."""
+        return {
+            "id": self.id,
+            "record_type": self.record_type,
+            "record_id": self.record_id,
+            "owner_id": self.owner_id,
+            "shared_with_id": self.shared_with_id,
+            "access_level": self.access_level,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class ConnectionRequest(db.Model):
     """
     A connection request between two users.
-    
+
     Status flow: pending → accepted/declined
     """
     __tablename__ = "connection_requests"
