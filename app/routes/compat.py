@@ -1437,6 +1437,143 @@ def delete_risk_flag(rf_id):
 
 
 # ---------------------------------------------------------------------------
+# Record Shares (owner-only management of RecordShare grants)
+# ---------------------------------------------------------------------------
+
+# Record types a user may share, mapped back to their model class. Derived
+# from _RECORD_TYPE_BY_MODEL minus risk_flag: risk flags are only reachable
+# through the shared-access helper (parent-scoped), not directly shareable.
+_SHAREABLE_MODELS = {
+    rtype: model for model, rtype in _RECORD_TYPE_BY_MODEL.items()
+    if rtype != "risk_flag"
+}
+
+
+def _owned_record_or_404(record_type, record_id, user):
+    """Owner-only record lookup for share management.
+
+    Deliberately checks portfolio ownership ONLY — never routes through
+    _get_accessible_or_404. A user who was merely shared a record must not
+    be able to re-share it or inspect its share list; only the true owner
+    (record's portfolio_id in the caller's portfolios) may manage shares.
+    404 (not 403) for non-owners, matching the existence-hiding convention.
+    """
+    record = _SHAREABLE_MODELS[record_type].query.get(record_id)
+    if not record or record.portfolio_id not in _get_user_portfolio_ids(user):
+        abort(404)
+    return record
+
+
+@compat_bp.route("/shares", methods=["POST"])
+@_require_api_key
+def create_share():
+    """Share a record with another user, or update an existing share's level.
+
+    Body: {recordType, recordId, sharedWithId, accessLevel}
+    Upserts on the (recordType, recordId, sharedWithId) unique key so
+    re-sharing at a new access level updates the existing grant instead of
+    hitting the unique constraint. Returns 201 on create, 200 on update.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    data = request.get_json() or {}
+
+    record_type = data.get("recordType")
+    if record_type not in _SHAREABLE_MODELS:
+        return jsonify({"error": "recordType must be one of: asset, project, deal, vendor"}), 400
+    access_level = data.get("accessLevel")
+    if access_level not in ("view", "edit"):
+        return jsonify({"error": "accessLevel must be 'view' or 'edit'"}), 400
+    try:
+        record_id = int(data.get("recordId"))
+        shared_with_id = int(data.get("sharedWithId"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "recordId and sharedWithId are required integers"}), 400
+    if shared_with_id == user.id:
+        return jsonify({"error": "Cannot share a record with yourself"}), 400
+    if not User.query.get(shared_with_id):
+        return jsonify({"error": "sharedWithId does not match an existing user"}), 400
+
+    _owned_record_or_404(record_type, record_id, user)
+
+    share = RecordShare.query.filter_by(
+        record_type=record_type, record_id=record_id, shared_with_id=shared_with_id
+    ).first()
+    if share:
+        share.access_level = access_level
+        status = 200
+    else:
+        share = RecordShare(
+            record_type=record_type,
+            record_id=record_id,
+            owner_id=user.id,
+            shared_with_id=shared_with_id,
+            access_level=access_level,
+        )
+        db.session.add(share)
+        status = 201
+    db.session.commit()
+    return jsonify(_to_gui(share.to_dict())), status
+
+
+@compat_bp.route("/shares", methods=["GET"])
+@_require_api_key
+def list_shares():
+    """List the shares the caller created for one record they own.
+
+    Query params: recordType, recordId. Each share embeds the recipient's
+    public profile under `sharedWith` so a future sharing UI can render
+    names without extra user lookups.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    record_type = request.args.get("recordType")
+    if record_type not in _SHAREABLE_MODELS:
+        return jsonify({"error": "recordType must be one of: asset, project, deal, vendor"}), 400
+    try:
+        record_id = int(request.args.get("recordId", ""))
+    except ValueError:
+        return jsonify({"error": "recordId is required and must be an integer"}), 400
+
+    _owned_record_or_404(record_type, record_id, user)
+
+    shares = RecordShare.query.filter_by(
+        record_type=record_type, record_id=record_id, owner_id=user.id
+    ).all()
+    # One query for all recipients instead of one per share
+    recipients = (
+        {u.id: u for u in User.query.filter(User.id.in_([s.shared_with_id for s in shares])).all()}
+        if shares
+        else {}
+    )
+    payload = []
+    for s in shares:
+        d = _to_gui(s.to_dict())
+        recipient = recipients.get(s.shared_with_id)
+        d["sharedWith"] = _user_public_dict(recipient) if recipient else None
+        payload.append(d)
+    return jsonify(payload)
+
+
+@compat_bp.route("/shares/<int:share_id>", methods=["DELETE"])
+@_require_api_key
+def delete_share(share_id):
+    """Revoke a share. Only the user who granted it (owner_id) may revoke;
+    anyone else gets 404, hiding whether the share exists."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    share = RecordShare.query.get_or_404(share_id)
+    if share.owner_id != user.id:
+        abort(404)
+    db.session.delete(share)
+    db.session.commit()
+    return jsonify({"deleted": True})
+
+
+# ---------------------------------------------------------------------------
 # S3 File Upload (Phase 4 - Profile Enhancement)
 # NOTE: This route is commented out - the JSON-based upload route is below
 # ---------------------------------------------------------------------------
