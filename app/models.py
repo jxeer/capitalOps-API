@@ -821,6 +821,51 @@ class MessageAttachment(db.Model):
     )
 
 
+class Comment(db.Model):
+    """
+    A comment on a shareable record (asset/project/deal/vendor).
+
+    Visibility is layered on top of record access ("inherited visibility"):
+    a caller must first be able to SEE the record at all (owner or share
+    recipient, gated by compat._get_accessible_or_404), and only then does
+    per-comment visibility apply:
+      - 'private': visible to the author only
+      - 'user':    visible to the author and target_user_id only
+      - 'all':     visible to everyone who can see the record
+
+    target_user_id is only meaningful for 'user' visibility; null otherwise.
+
+    New table — created by db.create_all() at startup (no migration; no
+    existing table altered).
+    """
+    __tablename__ = "comments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    record_type = db.Column(db.String(50), nullable=False)   # 'asset' / 'project' / 'deal' / 'vendor'
+    record_id = db.Column(db.Integer, nullable=False)         # ID within that record type's table
+    author_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    visibility = db.Column(db.String(20), nullable=False, default="all")  # 'private' / 'user' / 'all'
+    target_user_id = db.Column(db.Integer, db.ForeignKey("users.id"))     # recipient for 'user' visibility
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    author = db.relationship("User", foreign_keys=[author_id])
+
+    def to_dict(self):
+        """Serialize comment to a JSON-safe dictionary (snake_case; the
+        compat layer camelCases via _to_gui and attaches author info)."""
+        return {
+            "id": self.id,
+            "record_type": self.record_type,
+            "record_id": self.record_id,
+            "author_id": self.author_id,
+            "content": self.content,
+            "visibility": self.visibility,
+            "target_user_id": self.target_user_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class PasswordResetToken(db.Model):
     """
     A single-use password reset token sent to a user's email.

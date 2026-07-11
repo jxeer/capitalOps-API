@@ -46,6 +46,7 @@ from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
     Allocation, Milestone, Vendor, WorkOrder, RiskFlag, User,
     ConnectionRequest, Conversation, Message, MessageAttachment, RecordShare,
+    Comment,
 )
 
 compat_bp = Blueprint("compat", __name__)
@@ -1569,6 +1570,161 @@ def delete_share(share_id):
     if share.owner_id != user.id:
         abort(404)
     db.session.delete(share)
+    db.session.commit()
+    return jsonify({"deleted": True})
+
+
+# ---------------------------------------------------------------------------
+# Comments (on shareable records, with inherited visibility)
+# ---------------------------------------------------------------------------
+
+def _comment_payload(comments):
+    """Serialize comments with each author's public profile attached.
+
+    Batches the author lookup into one query instead of one per comment.
+    """
+    authors = (
+        {u.id: u for u in User.query.filter(User.id.in_({c.author_id for c in comments})).all()}
+        if comments
+        else {}
+    )
+    payload = []
+    for c in comments:
+        d = _to_gui(c.to_dict())
+        author = authors.get(c.author_id)
+        d["author"] = _user_public_dict(author) if author else None
+        payload.append(d)
+    return payload
+
+
+@compat_bp.route("/comments", methods=["POST"])
+@_require_api_key
+def create_comment():
+    """Comment on a record the caller can see.
+
+    Body: {recordType, recordId, content, visibility, targetUserId?}
+    Access is INHERITED from the record: any view access (owner or share
+    recipient, via _get_accessible_or_404) is enough to comment — comments
+    are annotations, not edits. Author comes from the JWT, never the body.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    data = request.get_json() or {}
+
+    record_type = data.get("recordType")
+    if record_type not in _SHAREABLE_MODELS:
+        return jsonify({"error": "recordType must be one of: asset, project, deal, vendor"}), 400
+    visibility = data.get("visibility")
+    if visibility not in ("private", "user", "all"):
+        return jsonify({"error": "visibility must be 'private', 'user', or 'all'"}), 400
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "content is required"}), 400
+    try:
+        record_id = int(data.get("recordId"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "recordId is required and must be an integer"}), 400
+
+    # 'user' visibility must name a real recipient; other visibilities
+    # ignore targetUserId entirely (stored as null).
+    target_user_id = None
+    if visibility == "user":
+        try:
+            target_user_id = int(data.get("targetUserId"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "targetUserId is required for 'user' visibility"}), 400
+        if not User.query.get(target_user_id):
+            return jsonify({"error": "targetUserId does not match an existing user"}), 400
+
+    # Access gate: view access to the record (owner OR share recipient) —
+    # 404 both for missing records and ones the caller can't see.
+    _get_accessible_or_404(_SHAREABLE_MODELS[record_type], record_id, user, require="view")
+
+    comment = Comment(
+        record_type=record_type,
+        record_id=record_id,
+        author_id=user.id,
+        content=content,
+        visibility=visibility,
+        target_user_id=target_user_id,
+    )
+    db.session.add(comment)
+    db.session.commit()
+    return jsonify(_comment_payload([comment])[0]), 201
+
+
+@compat_bp.route("/comments", methods=["GET"])
+@_require_api_key
+def list_comments():
+    """List the comments on a record that the caller may see.
+
+    Two layers: (1) the caller must have view access to the record itself
+    (this is how 'all' inherits record access — revoking the share hides
+    every comment); (2) per-comment visibility filters what remains.
+    """
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    record_type = request.args.get("recordType")
+    if record_type not in _SHAREABLE_MODELS:
+        return jsonify({"error": "recordType must be one of: asset, project, deal, vendor"}), 400
+    try:
+        record_id = int(request.args.get("recordId", ""))
+    except ValueError:
+        return jsonify({"error": "recordId is required and must be an integer"}), 400
+
+    # Layer 1 — record access (owner or share recipient), else 404
+    _get_accessible_or_404(_SHAREABLE_MODELS[record_type], record_id, user, require="view")
+
+    comments = (
+        Comment.query.filter_by(record_type=record_type, record_id=record_id)
+        .order_by(Comment.created_at)
+        .all()
+    )
+    # Layer 2 — per-comment visibility:
+    #   'all'     -> everyone who passed layer 1
+    #   'private' -> the author only
+    #   'user'    -> the author or the targeted user
+    visible = [
+        c for c in comments
+        if c.visibility == "all"
+        or (c.visibility == "private" and c.author_id == user.id)
+        or (c.visibility == "user" and user.id in (c.author_id, c.target_user_id))
+    ]
+    return jsonify(_comment_payload(visible))
+
+
+@compat_bp.route("/comments/<int:comment_id>", methods=["PUT"])
+@_require_api_key
+def update_comment(comment_id):
+    """Edit a comment's content. Author-only; 404 for anyone else so the
+    comment's existence isn't leaked."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    comment = Comment.query.get_or_404(comment_id)
+    if comment.author_id != user.id:
+        abort(404)
+    content = ((request.get_json() or {}).get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "content is required"}), 400
+    comment.content = content
+    db.session.commit()
+    return jsonify(_comment_payload([comment])[0])
+
+
+@compat_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
+@_require_api_key
+def delete_comment(comment_id):
+    """Delete a comment. Author-only; 404 for anyone else."""
+    user = _get_user_from_request()
+    if not user:
+        return jsonify({"message": "Authentication required"}), 401
+    comment = Comment.query.get_or_404(comment_id)
+    if comment.author_id != user.id:
+        abort(404)
+    db.session.delete(comment)
     db.session.commit()
     return jsonify({"deleted": True})
 
