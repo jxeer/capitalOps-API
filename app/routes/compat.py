@@ -292,6 +292,12 @@ def _get_accessible_or_404(model, record_id, user, require="view"):
     """
     record = model.query.get_or_404(record_id)
     if record.portfolio_id in _get_user_portfolio_ids(user):
+        # Stash how the caller got access ('owner' / 'edit' / 'view') as a
+        # transient attribute so by-id GET handlers can surface it to the
+        # frontend (e.g. to render a shared record read-only) without
+        # re-running the ownership/share lookups. Not a column; never
+        # persisted.
+        record._access_level = "owner"
         return record
     share = (
         RecordShare.query.filter_by(
@@ -303,6 +309,7 @@ def _get_accessible_or_404(model, record_id, user, require="view"):
         else None
     )
     if share and (require == "view" or share.access_level == "edit"):
+        record._access_level = share.access_level
         return record
     abort(404)
 
@@ -507,12 +514,19 @@ def list_assets():
 @compat_bp.route("/assets/<int:asset_id>", methods=["GET"])
 @_require_api_key
 def get_asset(asset_id):
-    """Return a single asset by ID (must be in the current user's portfolios)."""
+    """Return a single asset by ID (owner or share recipient).
+
+    Includes accessLevel ('owner'/'edit'/'view') — the helper stashes how
+    the caller got access — so the frontend can render view-only shares
+    read-only instead of letting Save fail with a 404.
+    """
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
     asset = _get_accessible_or_404(Asset, asset_id, user, require="view")
-    return jsonify(_to_gui(asset.to_dict()))
+    d = _to_gui(asset.to_dict())
+    d["accessLevel"] = getattr(asset, "_access_level", "owner")
+    return jsonify(d)
 
 
 @compat_bp.route("/assets", methods=["POST"])
