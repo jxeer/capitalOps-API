@@ -45,7 +45,7 @@ from app import db, limiter
 from app.models import (
     Portfolio, Asset, Project, Deal, Investor,
     Allocation, Milestone, Vendor, WorkOrder, RiskFlag, User,
-    ConnectionRequest, Conversation, Message, RecordShare,
+    ConnectionRequest, Conversation, Message, MessageAttachment, RecordShare,
 )
 
 compat_bp = Blueprint("compat", __name__)
@@ -1874,14 +1874,26 @@ def list_messages():
 @compat_bp.route("/messages", methods=["POST"])
 @_require_api_key
 def send_message():
-    """Send a message in a conversation. Sender resolved from JWT."""
+    """Send a message in a conversation. Sender resolved from JWT.
+
+    Optional `attachment` in the body shares a record with the other
+    participant: {recordType, recordId, accessLevel}. The sender must OWN
+    the record (portfolio ownership, same rule as POST /api/shares); the
+    recipient is derived from the conversation, never from the client.
+    Sharing upserts the RecordShare grant and stores a MessageAttachment
+    with a display-name snapshot for the chat card. content may be empty
+    when an attachment is present.
+    """
     user = _get_user_from_request()
     if not user:
         return jsonify({"message": "Authentication required"}), 401
 
-    data = request.get_json()
-    if not data or not data.get("conversationId") or not data.get("content"):
-        return jsonify({"error": "conversationId and content are required"}), 400
+    data = request.get_json() or {}
+    attachment = data.get("attachment")
+    content = data.get("content") or ""
+    # A message must say something OR share something.
+    if not data.get("conversationId") or (not content and not attachment):
+        return jsonify({"error": "conversationId and content or attachment are required"}), 400
 
     conv = Conversation.query.get_or_404(int(data["conversationId"]))
 
@@ -1889,12 +1901,67 @@ def send_message():
     if conv.user_id1 != user.id and conv.user_id2 != user.id:
         return jsonify({"error": "Not authorized to send messages to this conversation"}), 403
 
+    if attachment:
+        record_type = attachment.get("recordType")
+        if record_type not in _SHAREABLE_MODELS:
+            return jsonify({"error": "attachment recordType must be one of: asset, project, deal, vendor"}), 400
+        access_level = attachment.get("accessLevel")
+        if access_level not in ("view", "edit"):
+            return jsonify({"error": "attachment accessLevel must be 'view' or 'edit'"}), 400
+        try:
+            record_id = int(attachment.get("recordId"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "attachment recordId is required and must be an integer"}), 400
+
+        # Sender must OWN the record (portfolio check, not the share-aware
+        # helper) — being shared a record does not let you re-share it.
+        record = _owned_record_or_404(record_type, record_id, user)
+
+        # Recipient = the OTHER conversation participant, derived server-side.
+        recipient_id = conv.user_id2 if conv.user_id1 == user.id else conv.user_id1
+
+        # Upsert the grant, same semantics as create_share: re-sharing the
+        # same record to the same person just updates the access level.
+        share = RecordShare.query.filter_by(
+            record_type=record_type, record_id=record_id, shared_with_id=recipient_id
+        ).first()
+        if share:
+            share.access_level = access_level
+        else:
+            db.session.add(RecordShare(
+                record_type=record_type,
+                record_id=record_id,
+                owner_id=user.id,
+                shared_with_id=recipient_id,
+                access_level=access_level,
+            ))
+
+        # Display-name snapshot for the chat card. Deal has no name column;
+        # its display name is the project's asset name (same as Deal.to_dict).
+        if record_type == "deal":
+            record_name = (
+                record.project.asset.name
+                if record.project and record.project.asset
+                else f"Deal #{record.id}"
+            )
+        else:
+            record_name = record.name
+
     msg = Message(
         conversation_id=int(data["conversationId"]),
         sender_id=user.id,
-        content=data["content"]
+        content=content,
     )
     db.session.add(msg)
+    if attachment:
+        db.session.flush()  # assigns msg.id for the attachment FK
+        db.session.add(MessageAttachment(
+            message_id=msg.id,
+            record_type=record_type,
+            record_id=record_id,
+            record_name=record_name,
+        ))
+    # Single commit covers message + attachment + share upsert atomically.
     db.session.commit()
 
     return jsonify(msg.to_dict()), 201

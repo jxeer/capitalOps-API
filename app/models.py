@@ -777,9 +777,48 @@ class Message(db.Model):
             "senderName": self.sender.full_name if self.sender else None,
             "senderUsername": self.sender.username if self.sender else None,
             "content": self.content,
+            # Shared-record card data, or null for plain text messages.
+            # recordName is the denormalized snapshot from send time, so the
+            # card renders without a fetch and survives share revocation.
+            "attachment": {
+                "recordType": self.attachment.record_type,
+                "recordId": self.attachment.record_id,
+                "recordName": self.attachment.record_name,
+            } if self.attachment else None,
             "readAt": self.read_at.isoformat() if self.read_at else None,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class MessageAttachment(db.Model):
+    """
+    A shared record attached to a chat message (a "record card").
+
+    Created by POST /api/messages when the body carries an attachment; the
+    same request upserts the RecordShare grant for the recipient, so the
+    attachment is the visible artifact and the share is the access grant.
+
+    record_name is a DELIBERATE denormalized snapshot of the record's
+    display name at send time: the chat card can render without re-fetching
+    the record, and still shows something meaningful if the share is later
+    revoked (when the recipient can no longer read the record itself).
+
+    New table — created by db.create_all() at startup (no migration; the
+    messages table itself is untouched).
+    """
+    __tablename__ = "message_attachments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.Integer, db.ForeignKey("messages.id"), nullable=False)
+    record_type = db.Column(db.String(50), nullable=False)   # 'asset' / 'project' / 'deal' / 'vendor'
+    record_id = db.Column(db.Integer, nullable=False)         # ID within that record type's table
+    record_name = db.Column(db.String(255))                   # display-name snapshot at send time
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # One attachment per message (uselist=False), reachable as message.attachment
+    message = db.relationship(
+        "Message", backref=db.backref("attachment", uselist=False)
+    )
 
 
 class PasswordResetToken(db.Model):
