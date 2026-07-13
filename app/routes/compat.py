@@ -601,7 +601,11 @@ def get_project(project_id):
     if not user:
         return jsonify({"message": "Authentication required"}), 401
     project = _get_accessible_or_404(Project, project_id, user, require="view")
-    return jsonify(_to_gui(project.to_dict()))
+    d = _to_gui(project.to_dict())
+    # How the caller got access ('owner'/'edit'/'view') — stashed by the
+    # helper; lets the frontend render view-only shares read-only.
+    d["accessLevel"] = getattr(project, "_access_level", "owner")
+    return jsonify(d)
 
 
 @compat_bp.route("/projects", methods=["POST"])
@@ -676,7 +680,11 @@ def get_deal(deal_id):
     if not user:
         return jsonify({"message": "Authentication required"}), 401
     deal = _get_accessible_or_404(Deal, deal_id, user, require="view")
-    return jsonify(_to_gui(deal.to_dict()))
+    d = _to_gui(deal.to_dict())
+    # How the caller got access ('owner'/'edit'/'view') — stashed by the
+    # helper; lets the frontend render view-only shares read-only.
+    d["accessLevel"] = getattr(deal, "_access_level", "owner")
+    return jsonify(d)
 
 
 @compat_bp.route("/deals", methods=["POST"])
@@ -928,7 +936,11 @@ def get_vendor(vendor_id):
     if not user:
         return jsonify({"message": "Authentication required"}), 401
     vendor = _get_accessible_or_404(Vendor, vendor_id, user, require="view")
-    return jsonify(_to_gui(vendor.to_dict()))
+    d = _to_gui(vendor.to_dict())
+    # How the caller got access ('owner'/'edit'/'view') — stashed by the
+    # helper; lets the frontend render view-only shares read-only.
+    d["accessLevel"] = getattr(vendor, "_access_level", "owner")
+    return jsonify(d)
 
 
 @compat_bp.route("/vendors", methods=["POST"])
